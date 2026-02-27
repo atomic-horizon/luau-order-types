@@ -812,6 +812,12 @@ std::vector<ModuleName> Frontend::getRequiredScripts(const ModuleName& name, con
     {
         requiredModuleNames.push_back(moduleName);
     }
+#ifdef ORDER_STRING_REQUIRE
+    for (const auto& [moduleName, _] : require.sharedRequireList)
+    {
+        requiredModuleNames.push_back(moduleName);
+    }
+#endif
     return requiredModuleNames;
 }
 
@@ -1808,7 +1814,9 @@ std::pair<SourceNode*, SourceModule*> Frontend::getSourceNode(const ModuleName& 
     sourceNode->humanReadableName = sourceModule->humanReadableName;
 
     // clear all prior dependents. we will re-add them after parsing the rest of the graph
-    for (const auto& [moduleName, _] : sourceNode->requireLocations)
+    // Note: requireSet may contain both regular require() and Order shared() depends,
+    // so we iterate it to ensure all stale dependent entries are removed.
+    for (const ModuleName& moduleName : sourceNode->requireSet)
     {
         if (auto depIt = sourceNodes.find(moduleName); depIt != sourceNodes.end())
             depIt->second->dependents.erase(sourceNode->name);
@@ -1828,6 +1836,15 @@ std::pair<SourceNode*, SourceModule*> Frontend::getSourceNode(const ModuleName& 
         sourceNode->requireSet.insert(moduleName);
 
     sourceNode->requireLocations = require.requireList;
+
+#ifdef ORDER_STRING_REQUIRE
+    // Order shared() requires: add to requireSet for build ordering so these modules
+    // are type-checked before the module that depends on them. They are intentionally
+    // excluded from requireLocations so that getRequireCycles() does not report
+    // ModuleHasCyclicDependency errors for intentional cyclic Order service dependencies.
+    for (const auto& [moduleName, _] : require.sharedRequireList)
+        sourceNode->requireSet.insert(moduleName);
+#endif
 
     return {sourceNode.get(), sourceModule.get()};
 }

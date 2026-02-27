@@ -56,16 +56,24 @@ const AstStat* getFallthrough(const AstStat* node); // TypeInfer.cpp
 
 static std::optional<AstExpr*> matchRequire(const AstExprCall& call)
 {
-    const char* require = "require";
-
-    if (call.args.size != 1)
-        return std::nullopt;
-
     const AstExprGlobal* funcAsGlobal = call.func->as<AstExprGlobal>();
-    if (!funcAsGlobal || funcAsGlobal->name != require)
+    if (!funcAsGlobal)
         return std::nullopt;
 
+#ifdef ORDER_STRING_REQUIRE
+    // shared() accepts 1 or 2 args: shared("ModuleName") or shared("ModuleName", true)
+    if (funcAsGlobal->name == "shared")
+    {
+        if (call.args.size >= 1 && call.args.size <= 2)
+            return call.args.data[0];
+        return std::nullopt;
+    }
+#endif
+
     if (call.args.size != 1)
+        return std::nullopt;
+
+    if (funcAsGlobal->name != "require")
         return std::nullopt;
 
     return call.args.data[0];
