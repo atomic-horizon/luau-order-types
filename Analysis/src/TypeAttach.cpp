@@ -111,8 +111,7 @@ public:
         case PrimitiveType::Table:
             return allocator->alloc<AstTypeReference>(Location(), std::nullopt, AstName("table"), std::nullopt, Location());
         default:
-            LUAU_ASSERT(false); // this should be unreachable.
-            return nullptr;
+            return allocator->alloc<AstTypeReference>(Location(), std::nullopt, AstName("unknown"), std::nullopt, Location());
         }
     }
 

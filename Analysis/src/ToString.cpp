@@ -618,8 +618,8 @@ struct TypeStringifier
             state.emit("table");
             return;
         default:
-            LUAU_ASSERT(!"Unknown primitive type");
-            throw InternalCompilerError("Unknown primitive type " + std::to_string(ptv.type));
+            state.emit("<unknown-primitive-" + std::to_string(ptv.type) + ">");
+            return;
         }
     }
 
