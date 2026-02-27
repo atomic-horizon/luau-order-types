@@ -30,6 +30,13 @@ struct RequireTracer : AstVisitor
         if (global && global->name == "require" && expr->args.size >= 1)
             requireCalls.push_back(expr);
 
+#ifdef ORDER_STRING_REQUIRE
+        // Also trace Order-style `shared("ModuleName")` calls so that those modules
+        // are pre-loaded as dependencies before the calling module is type-checked.
+        if (global && global->name == "shared" && expr->args.size >= 1)
+            requireCalls.push_back(expr);
+#endif
+
         return true;
     }
 
@@ -152,7 +159,15 @@ struct RequireTracer : AstVisitor
 
             if (const ModuleInfo* info = result.exprs.find(arg))
             {
-                result.requireList.push_back({info->name, require->location});
+#ifdef ORDER_STRING_REQUIRE
+                // Route Order-style shared() calls into sharedRequireList so they
+                // participate in build ordering but are excluded from cycle detection.
+                const AstExprGlobal* funcAsGlobal = require->func->as<AstExprGlobal>();
+                if (funcAsGlobal && funcAsGlobal->name == "shared")
+                    result.sharedRequireList.push_back({info->name, require->location});
+                else
+#endif
+                    result.requireList.push_back({info->name, require->location});
 
                 ModuleInfo infoCopy = *info; // copy *info out since next line invalidates info!
                 result.exprs[require] = std::move(infoCopy);
