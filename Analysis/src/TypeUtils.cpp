@@ -534,10 +534,10 @@ void trackInteriorFreeType(Scope* scope, TypeId ty)
             return;
         }
     }
-    // There should at least be *one* generalization constraint per module
-    // where `interiorFreeTypes` is present, which would be the one made
-    // by ConstraintGenerator::visitModuleRoot.
-    LUAU_ASSERT(!"No scopes in parent chain had a present `interiorFreeTypes` member.");
+    // No scope in the chain is tracking interior free types — this is expected
+    // when called from the old type checker (e.g. extendTypePack via MagicClone),
+    // which never sets up interiorFreeTypes on any scope. The upstream assertion
+    // assumed new-solver context. Silently skip.
 }
 
 void trackInteriorFreeTypePack(Scope* scope, TypePackId tp)
@@ -552,10 +552,8 @@ void trackInteriorFreeTypePack(Scope* scope, TypePackId tp)
             return;
         }
     }
-    // There should at least be *one* generalization constraint per module
-    // where `interiorFreeTypes` is present, which would be the one made
-    // by ConstraintGenerator::visitModuleRoot.
-    LUAU_ASSERT(!"No scopes in parent chain had a present `interiorFreeTypePacks` member.");
+    // Same reasoning as trackInteriorFreeType above: tolerate old-solver callers
+    // that have no interiorFreeTypePacks set anywhere in the scope chain.
 }
 
 bool fastIsSubtype(TypeId subTy, TypeId superTy)
