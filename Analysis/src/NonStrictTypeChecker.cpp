@@ -23,6 +23,7 @@ LUAU_FASTFLAG(DebugLuauMagicTypes)
 
 LUAU_FASTINTVARIABLE(LuauNonStrictTypeCheckerRecursionLimit, 300)
 LUAU_FASTFLAGVARIABLE(LuauAddRecursionCounterToNonStrictTypeChecker)
+LUAU_FASTFLAGVARIABLE(LuauNonStrictModeUseErrorSupressingTag)
 
 namespace Luau
 {
@@ -530,6 +531,8 @@ struct NonStrictTypeChecker
             return visit(e);
         else if (auto e = expr->as<AstExprConstantNumber>())
             return visit(e);
+        else if (auto e = expr->as<AstExprConstantInteger>())
+            return visit(e);
         else if (auto e = expr->as<AstExprConstantString>())
             return visit(e);
         else if (auto e = expr->as<AstExprLocal>())
@@ -585,6 +588,11 @@ struct NonStrictTypeChecker
     }
 
     NonStrictContext visit(AstExprConstantNumber* expr)
+    {
+        return {};
+    }
+
+    NonStrictContext visit(AstExprConstantInteger* expr)
     {
         return {};
     }
@@ -1200,8 +1208,19 @@ struct NonStrictTypeChecker
                 SubtypingResult r = subtyping.isSubtype(actualType, *contextTy, scope);
                 if (r.normalizationTooComplex)
                     reportError(NormalizationTooComplex{}, fragment->location);
-                if (r.isSubtype)
-                    return {actualType};
+                if (FFlag::LuauNonStrictModeUseErrorSupressingTag)
+                {
+                    // If this subtype test passed and we did not see an error
+                    // suppressing bit, then return this as the type that will
+                    // error at runtime.
+                    if (r.isSubtype && !r.isErrorSuppressing)
+                        return {actualType};
+                }
+                else 
+                {
+                    if (r.isSubtype)
+                       return {actualType};
+                }
             }
         }
 

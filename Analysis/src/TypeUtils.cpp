@@ -13,9 +13,7 @@
 
 #include <algorithm>
 
-LUAU_FASTFLAG(LuauSolverV2)
-LUAU_FASTFLAGVARIABLE(LuauContainsAnyGenericDoesntTraverseIntoExtern)
-LUAU_FASTFLAG(LuauAnalysisUsesSolverMode)
+LUAU_FASTFLAG(LuauBidirectionalInferenceBetterUnionHandling)
 
 namespace Luau
 {
@@ -139,25 +137,8 @@ std::optional<TypeId> findTablePropertyRespectingMeta(
             const auto& fit = itt->props.find(name);
             if (fit != itt->props.end())
             {
-                // This is only used in the old solver?
-                if (FFlag::LuauAnalysisUsesSolverMode)
-                {
-                    if (useNewSolver)
-                    {
-                        switch (context)
-                        {
-                        case ValueContext::RValue:
-                            return fit->second.readTy;
-                        case ValueContext::LValue:
-                            return fit->second.writeTy;
-                        }
-                    }
-                    else
-                    {
-                        return fit->second.readTy;
-                    }
-                }
-                else if (FFlag::LuauSolverV2)
+
+                if (useNewSolver)
                 {
                     switch (context)
                     {
@@ -168,7 +149,9 @@ std::optional<TypeId> findTablePropertyRespectingMeta(
                     }
                 }
                 else
-                    return fit->second.type_DEPRECATED();
+                {
+                    return fit->second.readTy;
+                }
             }
         }
         else if (const auto& itf = get<FunctionType>(index))
@@ -581,8 +564,9 @@ bool fastIsSubtype(TypeId subTy, TypeId superTy)
     return r == Relation::Coincident || r == Relation::Superset;
 }
 
-std::optional<TypeId> extractMatchingTableType(std::vector<TypeId>& tables, TypeId exprType, NotNull<BuiltinTypes> builtinTypes)
+std::optional<TypeId> extractMatchingTableType_DEPRECATED(std::vector<TypeId>& tables, TypeId exprType, NotNull<BuiltinTypes> builtinTypes)
 {
+    LUAU_ASSERT(!FFlag::LuauBidirectionalInferenceBetterUnionHandling);
     if (tables.empty())
         return std::nullopt;
 
@@ -654,6 +638,112 @@ std::optional<TypeId> extractMatchingTableType(std::vector<TypeId>& tables, Type
         LUAU_ASSERT(firstTable);
         return firstTable;
     }
+
+    return std::nullopt;
+}
+
+/**
+ * There is a tension with how we encode tables and how we _want_ them to be
+ * typechecked. The classic example is:
+ *
+ * local tbl: { x: number? } = { x = 42 }
+ *
+ * Obviously, this _should_ work, but the type checker would tell us correctly
+ * that `{ x: number } </: { x: number? }`. This is what bidirectional
+ * inference is meant to resolve.
+ *
+ * However, because of this fact, we _cannot_ really use subtyping when trying
+ * to resolve bidirectional inference, otherwise we'd get a pretty poor UX when
+ * the user has written incorrect code. For example:
+ *
+ *  local tbl: { foo: number, bar: string } | { baz: string, quxx: boolean } = { foo = 42, | }
+ *
+ * For autocomplete at `|`, the user _wants_ `bar` to show up, but there's no
+ * world in which subtyping selects the correct union member here. We must use
+ * mechanical heuristics.
+ */
+std::optional<TypeId> extractMatchingTableType(const UnionType* expectedUnion, TypeId exprType, NotNull<BuiltinTypes> builtinTypes)
+{
+    LUAU_ASSERT(FFlag::LuauBidirectionalInferenceBetterUnionHandling);
+    const TableType* exprTable = get<TableType>(follow(exprType));
+    if (!exprTable)
+        return std::nullopt;
+
+    // Try to filter out tables based on property names, for example
+    // if we are considering the type ...
+    //
+    //  { foo: number, bar: string } | { foo: number, baz: boolean }
+    //
+    // ... and the table in question looks like ...
+    //
+    //  { baz = true }
+    //
+    // ... the user probably intends the second definition.
+    TypeIds potentialTables;
+
+    for (TypeId ty : expectedUnion)
+    {
+        if (auto tt = get<TableType>(ty))
+        {
+            bool isDisjoint = false;
+            // NOTE: We iterate over the expected properties for structural subtyping reasons,
+            // consider:
+            //
+            //  local t: { foo: number? } = {
+            //      foo = 42,
+            //      -- 10,000 properties not shown.
+            //  }
+            //
+            // Those 10k properties do not matter here.
+            for (const auto& [name, expectedProp] : tt->props)
+            {
+                // If the property from the expected type is not in the
+                // expression, skip it.
+                auto propInTableExpr = exprTable->props.find(name);
+                if (propInTableExpr == exprTable->props.end())
+                    continue;
+
+                // Also, if the expected type does not have a read component, skip this.
+                if (!expectedProp.readTy)
+                    continue;
+
+                const auto& [_, exprProp] = *propInTableExpr;
+
+                // If the expression property doesn't have a read type, then
+                // we cannot reasonably check this against the read type of
+                // the expected property.
+                if (!exprProp.readTy)
+                {
+                    // Also assert here: we should never encounter an inferred
+                    // write-only type from an expression.
+                    LUAU_ASSERT(!"Unexpected write-only property inside table literal.");
+                    continue;
+                }
+
+                const TypeId expectedPropType = follow(*expectedProp.readTy);
+                const TypeId exprPropType = follow(*exprProp.readTy);
+
+                if (relate(expectedPropType, exprPropType) == Relation::Disjoint)
+                {
+                    isDisjoint = true;
+                    break;
+                }
+
+                auto ft = get<FreeType>(exprPropType);
+                if (ft && relate(ft->lowerBound, expectedPropType) == Relation::Disjoint)
+                {
+                    isDisjoint = true;
+                    break;
+                }
+            }
+
+            if (!isDisjoint)
+                potentialTables.insert(ty);
+        }
+    }
+
+    if (potentialTables.size() == 1)
+        return {*potentialTables.begin()};
 
     return std::nullopt;
 }
@@ -861,7 +951,7 @@ ContainsAnyGeneric::ContainsAnyGeneric()
 
 bool ContainsAnyGeneric::visit(TypeId ty, const ExternType&)
 {
-    return !FFlag::LuauContainsAnyGenericDoesntTraverseIntoExtern;
+    return false;
 }
 
 bool ContainsAnyGeneric::visit(TypeId ty)
@@ -947,6 +1037,56 @@ bool isBlocked(TypeId ty)
         return tfit->state == TypeFunctionInstanceState::Unsolved;
 
     return is<BlockedType, PendingExpansionType>(ty);
+}
+
+std::optional<TypePackId> getApproximateReturnTypeForFunctionCall(TypeId ty, DenseHashSet<TypeId>& seen)
+{
+    ty = follow(ty);
+    if (seen.contains(ty))
+        return std::nullopt;
+
+    seen.insert(ty);
+
+    if (auto ftv = get<FunctionType>(ty))
+        return { ftv->retTypes };
+
+    if (auto utv = get<UnionType>(ty); utv && begin(utv) != end(utv))
+        return getApproximateReturnTypeForFunctionCall(*begin(utv), seen);
+
+    return std::nullopt;
+}
+
+std::optional<TypePackId> getApproximateReturnTypeForFunctionCall(TypeId ty)
+{
+    DenseHashSet<TypeId> seen{nullptr};
+    return getApproximateReturnTypeForFunctionCall(ty, seen);
+}
+
+OccursCheckResult occursCheck(TypePackId needle, TypePackId haystack)
+{
+    needle = follow(needle);
+    haystack = follow(haystack);
+
+    LUAU_ASSERT((is<FreeTypePack, BlockedTypePack>(needle)));
+
+    if (is<ErrorTypePack>(needle))
+        return OccursCheckResult::Pass;
+
+    while (!get<ErrorTypePack>(haystack))
+    {
+        if (needle == haystack)
+            return OccursCheckResult::Fail;
+
+        if (auto a = get<TypePack>(haystack); a && a->tail)
+        {
+            haystack = follow(*a->tail);
+            continue;
+        }
+
+        break;
+    }
+
+    return OccursCheckResult::Pass;
 }
 
 

@@ -39,7 +39,11 @@ public:
         static const unsigned int kMaxLength = 32;
 
         int32_t keys[kMaxLength];
+        // constants are indices that correspond to the proto constant table
+        // if a key does not have an associated constant to fill in, it has a sentinel value of -1
+        int32_t constants[kMaxLength];
         unsigned int length = 0;
+        bool hasConstants = false;
 
         bool operator==(const TableShape& other) const;
     };
@@ -54,6 +58,7 @@ public:
     int32_t addConstantNil();
     int32_t addConstantBoolean(bool value);
     int32_t addConstantNumber(double value);
+    int32_t addConstantInteger(int64_t value);
     int32_t addConstantVector(float x, float y, float z, float w);
     int32_t addConstantString(StringRef value);
     int32_t addImport(uint32_t iid);
@@ -106,6 +111,7 @@ public:
         Dump_Locals = 1 << 3,
         Dump_Remarks = 1 << 4,
         Dump_Types = 1 << 5,
+        Dump_Constants = 1 << 6,
     };
 
     void setDumpFlags(uint32_t flags)
@@ -132,6 +138,13 @@ public:
     std::string dumpSourceRemarks() const;
     std::string dumpTypeInfo() const;
 
+    std::string getFunctionData(uint32_t id)
+    {
+        return functions[id].data;
+    }
+
+    std::vector<std::string_view> getStringTable();
+
     void annotateInstruction(std::string& result, uint32_t fid, uint32_t instpos) const;
 
     static uint32_t getImportId(int32_t id0);
@@ -155,6 +168,7 @@ private:
             Type_Nil,
             Type_Boolean,
             Type_Number,
+            Type_Integer,
             Type_Vector,
             Type_String,
             Type_Import,
@@ -167,6 +181,7 @@ private:
         {
             bool valueBoolean;
             double valueNumber;
+            int64_t valueInteger64;
             float valueVector[4];
             unsigned int valueString; // index into string table
             uint32_t valueImport;     // 10-10-10-2 encoded import id

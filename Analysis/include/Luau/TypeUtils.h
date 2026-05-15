@@ -84,6 +84,16 @@ std::optional<TypeId> findTablePropertyRespectingMeta(
 
 bool occursCheck(TypeId needle, TypeId haystack);
 
+// NOTE: This uses a custom enum as it is replacing several bespoke
+// implementations of the same logic.
+enum class OccursCheckResult
+{
+    Pass,
+    Fail
+};
+
+OccursCheckResult occursCheck(TypePackId needle, TypePackId haystack);
+
 // Returns the minimum and maximum number of types the argument list can accept.
 std::pair<size_t, std::optional<size_t>> getParameterExtents(const TxnLog* log, TypePackId tp, bool includeHiddenVariadics = false);
 
@@ -283,7 +293,14 @@ bool fastIsSubtype(TypeId subTy, TypeId superTy);
  * @param exprType Type of the expression to match
  * @return An element of `tables` that best matches `exprType`.
  */
-std::optional<TypeId> extractMatchingTableType(std::vector<TypeId>& tables, TypeId exprType, NotNull<BuiltinTypes> builtinTypes);
+std::optional<TypeId> extractMatchingTableType_DEPRECATED(std::vector<TypeId>& tables, TypeId exprType, NotNull<BuiltinTypes> builtinTypes);
+
+/**
+ * @param tables A list of potential table parts of a union
+ * @param exprType Type of the expression to match
+ * @return An element of `tables` that best matches `exprType`.
+ */
+std::optional<TypeId> extractMatchingTableType(const UnionType* utv, TypeId exprType, NotNull<BuiltinTypes> builtinTypes);
 
 /**
  * @param item A member of a table in an AST
@@ -413,5 +430,17 @@ bool containsGeneric(TypePackId ty, NotNull<DenseHashSet<const void*>> generics)
  *         type function.
  */
 bool isBlocked(TypeId ty);
+
+
+/**
+ * **YOU SHOULD PROBABLY NOT USE THIS FUNCTION.**
+ *
+ * This function is a stop-gap while we rework function call inference and
+ * eager generalization.
+ *
+ * @return An approximate return type of `ty`, assuming `ty` is a function or
+ *         union of functions.
+ */
+std::optional<TypePackId> getApproximateReturnTypeForFunctionCall(TypeId ty);
 
 } // namespace Luau

@@ -196,6 +196,29 @@ static const std::string kNames[] = {
     "intersectionof",
     "newtable",
     "newfunction",
+    "integer",
+    "neg",
+    "add",
+    "sub",
+    "mul",
+    "div",
+    "rem",
+    "idiv",
+    "mod",
+    "udiv",
+    "urem",
+    "lt",
+    "le",
+    "gt",
+    "ge",
+    "ult",
+    "ule",
+    "ugt",
+    "uge",
+    "readinteger",
+    "writeinteger",
+    "mininteger",
+    "maxinteger",
 };
 
 static const std::string kTypes[] = {
@@ -204,6 +227,7 @@ static const std::string kTypes[] = {
     "buffer",
     "nil",
     "number",
+    "integer",
     "string",
     "thread",
     "vector",
@@ -220,6 +244,46 @@ static const std::string kExternTypes[] = {
 static const std::string kBuiltinTypes[] = {
     "len", "unm", "add", "sub",   "mul",      "div",   "idiv",   "pow",          "mod",          "concat",
     "lt",  "le",  "eq",  "keyof", "rawkeyof", "index", "rawget", "setmetatable", "getmetatable",
+};
+
+struct BuiltinLibrary
+{
+    const char* name;
+    const std::vector<std::string> methods;
+};
+
+static const BuiltinLibrary kBuiltinLibraries[] = {
+    {"math", {"abs",    "acos",       "asin",  "atan", "atan2", "ceil",  "clamp", "cos", "cosh", "deg",   "exp",   "floor",
+              "fmod",   "frexp",      "ldexp", "lerp", "log",   "log10", "max",   "min", "modf", "noise", "pow",   "rad",
+              "random", "randomseed", "round", "sign", "sin",   "sinh",  "sqrt",  "tan", "tanh", "isnan", "isinf", "isfinite"}},
+    {"bit32",
+     {"arshift",
+      "band",
+      "bnot",
+      "bor",
+      "btest",
+      "bxor",
+      "byteswap",
+      "countlz",
+      "countrz",
+      "extract",
+      "lrotate",
+      "lshift",
+      "replace",
+      "rrotate",
+      "rshift"}},
+    {"string", {"byte", "char", "find", "format", "gmatch", "gsub", "len", "lower", "match", "rep", "reverse", "split", "sub", "upper"}},
+    {"table", {"clear", "clone", "concat", "create", "find", "freeze", "insert", "isfrozen", "maxn", "move", "remove", "sort", "unpack"}},
+    {"buffer", {"create",  "fromstring", "len",     "tostring", "copy",       "fill",        "readi8",      "readu8",      "writei8",
+                "writeu8", "readi16",    "readu16", "writei16", "writeu16",   "readi32",     "readu32",     "writei32",    "writeu32",
+                "readf32", "writef32",   "readf64", "writef64", "readstring", "writestring", "readinteger", "writeinteger"}},
+    {"coroutine", {"close", "create", "isyieldable", "resume", "running", "status", "wrap", "yield"}},
+    {"os", {"clock", "date", "difftime", "time"}},
+    {"utf8", {"char", "codepoint", "codes", "len", "offset", "charpattern", "graphemes"}},
+    {"vector", {"create", "magnitude", "normalize", "cross", "dot", "floor", "ceil", "abs", "sign", "clamp", "min", "max", "lerp"}},
+    {"integer", {"add", "sub",  "mul",    "div",    "idiv",    "udiv",    "mod",     "rem",     "urem",    "neg",     "create",  "clamp", "min",
+                 "max", "band", "bor",    "bxor",   "bnot",    "btest",   "bswap",   "lt",      "le",      "gt",      "ge",      "ult",   "ule",
+                 "ugt", "uge",  "lshift", "rshift", "arshift", "lrotate", "rrotate", "countlz", "countrz", "extract", "tonumber"}},
 };
 
 struct ProtoToLuau
@@ -331,6 +395,8 @@ struct ProtoToLuau
             print(expr.bool_());
         else if (expr.has_number())
             print(expr.number());
+        else if (expr.has_integer())
+            print(expr.integer());
         else if (expr.has_string())
             print(expr.string());
         else if (expr.has_local())
@@ -357,6 +423,8 @@ struct ProtoToLuau
             print(expr.ifelse());
         else if (expr.has_interpstring())
             print(expr.interpstring());
+        else if (expr.has_builtin_ref())
+            print(expr.builtin_ref());
         else
             source += "_";
     }
@@ -375,6 +443,8 @@ struct ProtoToLuau
             print(expr.index_name());
         else if (expr.has_index_expr())
             print(expr.index_expr());
+        else if (expr.has_builtin_ref())
+            print(expr.builtin_ref());
         else
             source += "_";
     }
@@ -399,6 +469,11 @@ struct ProtoToLuau
     void print(const luau::ExprConstantNumber& expr)
     {
         source += std::to_string(expr.val());
+    }
+
+    void print(const luau::ExprConstantInteger& expr)
+    {
+        source += std::to_string(expr.val()) + "i";
     }
 
     void print(const luau::ExprConstantString& expr)
@@ -640,6 +715,17 @@ struct ProtoToLuau
         }
 
         source += "`";
+    }
+
+    void print(const luau::ExprBuiltinRef& expr)
+    {
+        size_t libIndex = size_t(expr.library()) % std::size(kBuiltinLibraries);
+        const BuiltinLibrary& lib = kBuiltinLibraries[libIndex];
+        const auto& methods = lib.methods;
+        size_t methodIndex = size_t(expr.method()) % methods.size();
+        source += lib.name;
+        source += '.';
+        source += methods[methodIndex];
     }
 
     void print(const luau::LValue& expr)
@@ -1206,6 +1292,8 @@ struct ProtoToLuau
             print(lit.bool_());
         else if (lit.has_number())
             print(lit.number());
+        else if (lit.has_integer())
+            print(lit.integer());
         else if (lit.has_string())
             print(lit.string());
     }

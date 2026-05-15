@@ -6,8 +6,11 @@
 
 #include <algorithm>
 #include <string.h>
+#include <climits>
 
-LUAU_FASTFLAGVARIABLE(LuauCompileCorrectLocalPc)
+LUAU_FASTFLAG(LuauCompileDuptableConstantPack2)
+LUAU_FASTFLAG(LuauIntegerType)
+LUAU_FASTFLAGVARIABLE(LuauCompileUdataDirect)
 
 namespace Luau
 {
@@ -52,88 +55,13 @@ static void writeDouble(std::string& ss, double value)
     ss.append(reinterpret_cast<const char*>(&value), sizeof(value));
 }
 
-static void writeVarInt(std::string& ss, unsigned int value)
+static void writeVarInt(std::string& ss, uint64_t value)
 {
     do
     {
         writeByte(ss, (value & 127) | ((value > 127) << 7));
         value >>= 7;
     } while (value);
-}
-
-inline bool isJumpD(LuauOpcode op)
-{
-    switch (op)
-    {
-    case LOP_JUMP:
-    case LOP_JUMPIF:
-    case LOP_JUMPIFNOT:
-    case LOP_JUMPIFEQ:
-    case LOP_JUMPIFLE:
-    case LOP_JUMPIFLT:
-    case LOP_JUMPIFNOTEQ:
-    case LOP_JUMPIFNOTLE:
-    case LOP_JUMPIFNOTLT:
-    case LOP_FORNPREP:
-    case LOP_FORNLOOP:
-    case LOP_FORGPREP:
-    case LOP_FORGLOOP:
-    case LOP_FORGPREP_INEXT:
-    case LOP_FORGPREP_NEXT:
-    case LOP_JUMPBACK:
-    case LOP_JUMPXEQKNIL:
-    case LOP_JUMPXEQKB:
-    case LOP_JUMPXEQKN:
-    case LOP_JUMPXEQKS:
-        return true;
-
-    default:
-        return false;
-    }
-}
-
-inline bool isSkipC(LuauOpcode op)
-{
-    switch (op)
-    {
-    case LOP_LOADB:
-        return true;
-
-    default:
-        return false;
-    }
-}
-
-inline bool isFastCall(LuauOpcode op)
-{
-    switch (op)
-    {
-    case LOP_FASTCALL:
-    case LOP_FASTCALL1:
-    case LOP_FASTCALL2:
-    case LOP_FASTCALL2K:
-    case LOP_FASTCALL3:
-        return true;
-
-    default:
-        return false;
-    }
-}
-
-static int getJumpTarget(uint32_t insn, uint32_t pc)
-{
-    LuauOpcode op = LuauOpcode(LUAU_INSN_OP(insn));
-
-    if (isJumpD(op))
-        return int(pc + LUAU_INSN_D(insn) + 1);
-    else if (isFastCall(op))
-        return int(pc + LUAU_INSN_C(insn) + 2);
-    else if (isSkipC(op) && LUAU_INSN_C(insn))
-        return int(pc + LUAU_INSN_C(insn) + 1);
-    else if (op == LOP_JUMPX)
-        return int(pc + LUAU_INSN_E(insn) + 1);
-    else
-        return -1;
 }
 
 bool BytecodeBuilder::StringRef::operator==(const StringRef& other) const
@@ -143,7 +71,22 @@ bool BytecodeBuilder::StringRef::operator==(const StringRef& other) const
 
 bool BytecodeBuilder::TableShape::operator==(const TableShape& other) const
 {
-    return length == other.length && memcmp(keys, other.keys, length * sizeof(keys[0])) == 0;
+    if (!FFlag::LuauCompileDuptableConstantPack2)
+    {
+
+        return length == other.length && memcmp(keys, other.keys, length * sizeof(keys[0])) == 0;
+    }
+    else
+    {
+        bool equal = length == other.length && memcmp(keys, other.keys, length * sizeof(keys[0])) == 0 && hasConstants == other.hasConstants;
+
+        if (hasConstants)
+        {
+            equal = equal && memcmp(constants, other.constants, length * sizeof(constants[0])) == 0;
+        }
+
+        return equal;
+    }
 }
 
 size_t BytecodeBuilder::StringRefHash::operator()(const StringRef& v) const
@@ -201,6 +144,12 @@ size_t BytecodeBuilder::TableShapeHash::operator()(const TableShape& v) const
     {
         hash ^= v.keys[i];
         hash *= 16777619;
+
+        if (FFlag::LuauCompileDuptableConstantPack2 && v.hasConstants)
+        {
+            hash ^= v.constants[i];
+            hash *= 16777619;
+        }
     }
 
     return hash;
@@ -365,6 +314,18 @@ int32_t BytecodeBuilder::addConstantNumber(double value)
 
     ConstantKey k = {Constant::Type_Number};
     static_assert(sizeof(k.value) == sizeof(value), "Expecting double to be 64-bit");
+    memcpy(&k.value, &value, sizeof(value));
+
+    return addConstant(k, c);
+}
+
+int32_t BytecodeBuilder::addConstantInteger(int64_t value)
+{
+    Constant c = {Constant::Type_Integer};
+    c.valueInteger64 = value;
+
+    ConstantKey k = {Constant::Type_Integer};
+    static_assert(sizeof(k.value) == sizeof(value), "Expecting integer to be 64-bit");
     memcpy(&k.value, &value, sizeof(value));
 
     return addConstant(k, c);
@@ -798,6 +759,20 @@ void BytecodeBuilder::writeFunction(std::string& ss, uint32_t id, uint8_t flags)
             writeDouble(ss, c.valueNumber);
             break;
 
+        case Constant::Type_Integer:
+            writeByte(ss, LBC_CONSTANT_INTEGER);
+            if (c.valueInteger64 < 0)
+            {
+                writeByte(ss, 1);
+                writeVarInt(ss, ~(uint64_t)c.valueInteger64 + 1);
+            }
+            else
+            {
+                writeByte(ss, 0);
+                writeVarInt(ss, c.valueInteger64);
+            }
+            break;
+
         case Constant::Type_Vector:
             writeByte(ss, LBC_CONSTANT_VECTOR);
             writeFloat(ss, c.valueVector[0]);
@@ -819,10 +794,23 @@ void BytecodeBuilder::writeFunction(std::string& ss, uint32_t id, uint8_t flags)
         case Constant::Type_Table:
         {
             const TableShape& shape = tableShapes[c.valueTable];
-            writeByte(ss, LBC_CONSTANT_TABLE);
-            writeVarInt(ss, uint32_t(shape.length));
-            for (unsigned int i = 0; i < shape.length; ++i)
-                writeVarInt(ss, shape.keys[i]);
+            if (FFlag::LuauCompileDuptableConstantPack2 && shape.hasConstants)
+            {
+                writeByte(ss, LBC_CONSTANT_TABLE_WITH_CONSTANTS);
+                writeVarInt(ss, uint32_t(shape.length));
+                for (unsigned int i = 0; i < shape.length; ++i)
+                {
+                    writeVarInt(ss, shape.keys[i]);
+                    writeInt(ss, shape.constants[i]);
+                }
+            }
+            else
+            {
+                writeByte(ss, LBC_CONSTANT_TABLE);
+                writeVarInt(ss, uint32_t(shape.length));
+                for (unsigned int i = 0; i < shape.length; ++i)
+                    writeVarInt(ss, shape.keys[i]);
+            }
             break;
         }
 
@@ -1220,30 +1208,26 @@ void BytecodeBuilder::expandJumps()
     insns.swap(newinsns);
     lines.swap(newlines);
 
-    if (FFlag::LuauCompileCorrectLocalPc)
+    for (DebugLocal& debugLocal : debugLocals)
     {
-        for (DebugLocal& debugLocal : debugLocals)
-        {
-            // endpc is exclusive, to get the right remapping, we need to remap the location before the end
-            if (debugLocal.startpc != debugLocal.endpc)
-                debugLocal.endpc = remap[debugLocal.endpc - 1] + 1;
-            else
-                debugLocal.endpc = remap[debugLocal.endpc];
+        // endpc is exclusive, to get the right remapping, we need to remap the location before the end
+        if (debugLocal.startpc != debugLocal.endpc)
+            debugLocal.endpc = remap[debugLocal.endpc - 1] + 1;
+        else
+            debugLocal.endpc = remap[debugLocal.endpc];
 
-            debugLocal.startpc = remap[debugLocal.startpc];
+        debugLocal.startpc = remap[debugLocal.startpc];
+    }
 
-        }
+    for (TypedLocal& typedLocal : typedLocals)
+    {
+        // endpc is exclusive, to get the right remapping, we need to remap the location before the end
+        if (typedLocal.startpc != typedLocal.endpc)
+            typedLocal.endpc = remap[typedLocal.endpc - 1] + 1;
+        else
+            typedLocal.endpc = remap[typedLocal.endpc];
 
-        for (TypedLocal& typedLocal : typedLocals)
-        {
-            // endpc is exclusive, to get the right remapping, we need to remap the location before the end
-            if (typedLocal.startpc != typedLocal.endpc)
-                typedLocal.endpc = remap[typedLocal.endpc - 1] + 1;
-            else
-                typedLocal.endpc = remap[typedLocal.endpc];
-
-            typedLocal.startpc = remap[typedLocal.startpc];
-        }
+        typedLocal.startpc = remap[typedLocal.startpc];
     }
 }
 
@@ -1259,6 +1243,17 @@ std::string BytecodeBuilder::getError(const std::string& message)
 
 uint8_t BytecodeBuilder::getVersion()
 {
+    if (FFlag::LuauCompileUdataDirect)
+        return 9;
+
+    // LBC_CONSTANT_INTEGER requires version 8
+    if (FFlag::LuauIntegerType)
+        return 8;
+
+    // LBC_CONSTANT_TABLE_WITH_CONSTANTS requires version 7
+    if (FFlag::LuauCompileDuptableConstantPack2)
+        return 7;
+
     return LBC_VERSION_TARGET;
 }
 
@@ -1668,6 +1663,20 @@ void BytecodeBuilder::validateInstructions() const
             }
             break;
 
+        case LOP_GETUDATAKS:
+        case LOP_SETUDATAKS:
+            VREG(LUAU_INSN_A(insn));
+            VREG(LUAU_INSN_B(insn));
+            VCONST(LUAU_INSN_AUX_KV16(insns[i + 1]), String);
+            break;
+
+        case LOP_NAMECALLUDATA:
+            VREG(LUAU_INSN_A(insn));
+            VREG(LUAU_INSN_B(insn));
+            VCONST(LUAU_INSN_AUX_KV16(insns[i + 1]), String);
+            LUAU_ASSERT(LUAU_INSN_OP(insns[i + 2]) == LOP_CALL);
+            break;
+
         default:
             LUAU_ASSERT(!"Unsupported opcode");
         }
@@ -1837,6 +1846,9 @@ void BytecodeBuilder::dumpConstant(std::string& result, int k) const
         break;
     case Constant::Type_Number:
         formatAppend(result, "%.17g", data.valueNumber);
+        break;
+    case Constant::Type_Integer:
+        formatAppend(result, "%lld", (long long)(int64_t)data.valueInteger64);
         break;
     case Constant::Type_Vector:
         // 3-vectors is the most common configuration, so truncate to three components if possible
@@ -2321,6 +2333,27 @@ void BytecodeBuilder::dumpInstruction(const uint32_t* code, std::string& result,
         code++;
         break;
 
+    case LOP_GETUDATAKS:
+        formatAppend(result, "GETUDATAKS R%d R%d K%d [", LUAU_INSN_A(insn), LUAU_INSN_B(insn), LUAU_INSN_AUX_KV16(*code));
+        dumpConstant(result, LUAU_INSN_AUX_KV16(*code));
+        result.append("]\n");
+        code++;
+        break;
+
+    case LOP_SETUDATAKS:
+        formatAppend(result, "SETUDATAKS R%d R%d K%d [", LUAU_INSN_A(insn), LUAU_INSN_B(insn), LUAU_INSN_AUX_KV16(*code));
+        dumpConstant(result, LUAU_INSN_AUX_KV16(*code));
+        result.append("]\n");
+        code++;
+        break;
+
+    case LOP_NAMECALLUDATA:
+        formatAppend(result, "NAMECALLUDATA R%d R%d K%d [", LUAU_INSN_A(insn), LUAU_INSN_B(insn), LUAU_INSN_AUX_KV16(*code));
+        dumpConstant(result, LUAU_INSN_AUX_KV16(*code));
+        result.append("]\n");
+        code++;
+        break;
+
     default:
         LUAU_ASSERT(!"Unsupported opcode");
     }
@@ -2337,6 +2370,8 @@ static const char* getBaseTypeString(uint8_t type)
         return "boolean";
     case LBC_TYPE_NUMBER:
         return "number";
+    case LBC_TYPE_INTEGER:
+        return "integer";
     case LBC_TYPE_STRING:
         return "string";
     case LBC_TYPE_TABLE:
@@ -2361,7 +2396,7 @@ static const char* getBaseTypeString(uint8_t type)
 
 std::string BytecodeBuilder::dumpCurrentFunction(std::vector<int>& dumpinstoffs) const
 {
-    if ((dumpFlags & Dump_Code) == 0)
+    if ((dumpFlags & (Dump_Code | Dump_Constants)) == 0)
         return std::string();
 
     int lastLine = -1;
@@ -2442,82 +2477,95 @@ std::string BytecodeBuilder::dumpCurrentFunction(std::vector<int>& dumpinstoffs)
         }
     }
 
-    std::vector<int> labels(insns.size(), -1);
-
-    // annotate valid jump targets with 0
-    for (size_t i = 0; i < insns.size();)
+    if (dumpFlags & Dump_Constants)
     {
-        int target = getJumpTarget(insns[i], uint32_t(i));
-
-        if (target >= 0)
+        for (size_t i = 0; i < constants.size(); ++i)
         {
-            LUAU_ASSERT(size_t(target) < insns.size());
-            labels[target] = 0;
+            formatAppend(result, "K%d: ", int(i));
+            dumpConstant(result, int(i));
+            formatAppend(result, "\n");
         }
-
-        i += getOpLength(LuauOpcode(LUAU_INSN_OP(insns[i])));
-        LUAU_ASSERT(i <= insns.size());
     }
 
-    int nextLabel = 0;
-
-    // compute label ids (sequential integers for all jump targets)
-    for (size_t i = 0; i < labels.size(); ++i)
-        if (labels[i] == 0)
-            labels[i] = nextLabel++;
-
-    dumpinstoffs.resize(insns.size() + 1, -1);
-
-    for (size_t i = 0; i < insns.size();)
+    if (dumpFlags & Dump_Code)
     {
-        const uint32_t* code = &insns[i];
-        uint8_t op = LUAU_INSN_OP(*code);
+        std::vector<int> labels(insns.size(), -1);
 
-        dumpinstoffs[i] = int(result.size());
-
-        if (op == LOP_PREPVARARGS)
+        // annotate valid jump targets with 0
+        for (size_t i = 0; i < insns.size();)
         {
-            // Don't emit function header in bytecode - it's used for call dispatching and doesn't contain "interesting" information
-            i++;
-            continue;
-        }
+            int target = getJumpTarget(insns[i], uint32_t(i));
 
-        if (dumpFlags & Dump_Remarks)
-        {
-            while (nextRemark < debugRemarks.size() && debugRemarks[nextRemark].first == i)
+            if (target >= 0)
             {
-                formatAppend(result, "REMARK %s\n", debugRemarkBuffer.c_str() + debugRemarks[nextRemark].second);
-                nextRemark++;
+                LUAU_ASSERT(size_t(target) < insns.size());
+                labels[target] = 0;
             }
+
+            i += getOpLength(LuauOpcode(LUAU_INSN_OP(insns[i])));
+            LUAU_ASSERT(i <= insns.size());
         }
 
-        if (dumpFlags & Dump_Source)
+        int nextLabel = 0;
+
+        // compute label ids (sequential integers for all jump targets)
+        for (size_t i = 0; i < labels.size(); ++i)
+            if (labels[i] == 0)
+                labels[i] = nextLabel++;
+
+        dumpinstoffs.resize(insns.size() + 1, -1);
+
+        for (size_t i = 0; i < insns.size();)
         {
-            int line = lines[i];
+            const uint32_t* code = &insns[i];
+            uint8_t op = LUAU_INSN_OP(*code);
 
-            if (line > 0 && line != lastLine)
+            dumpinstoffs[i] = int(result.size());
+
+            if (op == LOP_PREPVARARGS)
             {
-                LUAU_ASSERT(size_t(line - 1) < dumpSource.size());
-                formatAppend(result, "%5d: %s\n", line, dumpSource[line - 1].c_str());
-                lastLine = line;
+                // Don't emit function header in bytecode - it's used for call dispatching and doesn't contain "interesting" information
+                i++;
+                continue;
             }
+
+            if (dumpFlags & Dump_Remarks)
+            {
+                while (nextRemark < debugRemarks.size() && debugRemarks[nextRemark].first == i)
+                {
+                    formatAppend(result, "REMARK %s\n", debugRemarkBuffer.c_str() + debugRemarks[nextRemark].second);
+                    nextRemark++;
+                }
+            }
+
+            if (dumpFlags & Dump_Source)
+            {
+                int line = lines[i];
+
+                if (line > 0 && line != lastLine)
+                {
+                    LUAU_ASSERT(size_t(line - 1) < dumpSource.size());
+                    formatAppend(result, "%5d: %s\n", line, dumpSource[line - 1].c_str());
+                    lastLine = line;
+                }
+            }
+
+            if (dumpFlags & Dump_Lines)
+                formatAppend(result, "%d: ", lines[i]);
+
+            if (labels[i] != -1)
+                formatAppend(result, "L%d: ", labels[i]);
+
+            int target = getJumpTarget(*code, uint32_t(i));
+
+            dumpInstruction(code, result, target >= 0 ? labels[target] : -1);
+
+            i += getOpLength(LuauOpcode(op));
+            LUAU_ASSERT(i <= insns.size());
         }
 
-        if (dumpFlags & Dump_Lines)
-            formatAppend(result, "%d: ", lines[i]);
-
-        if (labels[i] != -1)
-            formatAppend(result, "L%d: ", labels[i]);
-
-        int target = getJumpTarget(*code, uint32_t(i));
-
-        dumpInstruction(code, result, target >= 0 ? labels[target] : -1);
-
-        i += getOpLength(LuauOpcode(op));
-        LUAU_ASSERT(i <= insns.size());
+        dumpinstoffs[insns.size()] = int(result.size());
     }
-
-    dumpinstoffs[insns.size()] = int(result.size());
 
     return result;
 }
@@ -2644,6 +2692,18 @@ std::string BytecodeBuilder::dumpTypeInfo() const
     }
 
     return result;
+}
+
+std::vector<std::string_view> BytecodeBuilder::getStringTable()
+{
+    std::vector<std::string_view> strings;
+    strings.resize(stringTable.size());
+    for (auto& p : stringTable)
+    {
+        LUAU_ASSERT(p.second > 0 && p.second <= strings.size());
+        strings[p.second - 1] = std::string_view(p.first.data, p.first.length);
+    }
+    return strings;
 }
 
 void BytecodeBuilder::annotateInstruction(std::string& result, uint32_t fid, uint32_t instpos) const

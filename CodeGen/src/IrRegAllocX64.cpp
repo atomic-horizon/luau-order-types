@@ -8,7 +8,7 @@
 
 #include "lstate.h"
 
-LUAU_FASTFLAG(LuauCodegenExtraSpills)
+LUAU_FASTFLAGVARIABLE(LuauCodegenNewRegSplit)
 
 namespace Luau
 {
@@ -17,7 +17,7 @@ namespace CodeGen
 namespace X64
 {
 
-static constexpr unsigned kValueDwordSize[] = {0, 0, 1, 1, 2, 1, 2, 4};
+static constexpr unsigned kValueDwordSize[] = {0, 0, 1, 1, 2, 2, 1, 2, 4};
 static_assert(sizeof(kValueDwordSize) / sizeof(kValueDwordSize[0]) == size_t(IrValueKind::Count), "all kinds have to be covered");
 
 static const RegisterX64 kGprAllocOrder[] = {rax, rdx, rcx, rbx, rsi, rdi, r8, r9, r10, r11};
@@ -206,7 +206,7 @@ void IrRegAllocX64::preserve(IrInst& inst)
     {
         unsigned i = findSpillStackSlot(spill.valueKind);
 
-        if (FFlag::LuauCodegenExtraSpills && isExtraSpillSlot(i))
+        if (isExtraSpillSlot(i))
         {
             int extraOffset = getExtraSpillAddressOffset(i);
 
@@ -223,7 +223,7 @@ void IrRegAllocX64::preserve(IrInst& inst)
                 build.vmovups(xmmword[emergencyTemp], inst.regX64);
             else if (spill.valueKind == IrValueKind::Double)
                 build.vmovsd(qword[emergencyTemp], inst.regX64);
-            else if (spill.valueKind == IrValueKind::Pointer)
+            else if (spill.valueKind == IrValueKind::Pointer || spill.valueKind == IrValueKind::Int64)
                 build.mov(qword[emergencyTemp], inst.regX64);
             else if (spill.valueKind == IrValueKind::Tag || spill.valueKind == IrValueKind::Int)
                 build.mov(dword[emergencyTemp], inst.regX64);
@@ -240,7 +240,7 @@ void IrRegAllocX64::preserve(IrInst& inst)
                 build.vmovups(xmmword[sSpillArea + i * 4], inst.regX64);
             else if (spill.valueKind == IrValueKind::Double)
                 build.vmovsd(qword[sSpillArea + i * 4], inst.regX64);
-            else if (spill.valueKind == IrValueKind::Pointer)
+            else if (spill.valueKind == IrValueKind::Pointer || spill.valueKind == IrValueKind::Int64)
                 build.mov(qword[sSpillArea + i * 4], inst.regX64);
             else if (spill.valueKind == IrValueKind::Tag || spill.valueKind == IrValueKind::Int)
                 build.mov(dword[sSpillArea + i * 4], inst.regX64);
@@ -300,7 +300,7 @@ void IrRegAllocX64::restore(IrInst& inst, bool intoOriginalLocation)
 
             if (spill.stackSlot != kNoStackSlot)
             {
-                if (FFlag::LuauCodegenExtraSpills && isExtraSpillSlot(spill.stackSlot))
+                if (isExtraSpillSlot(spill.stackSlot))
                 {
                     int extraOffset = getExtraSpillAddressOffset(spill.stackSlot);
 
@@ -320,7 +320,7 @@ void IrRegAllocX64::restore(IrInst& inst, bool intoOriginalLocation)
                     restoreAddr.memSize = reg.size;
                 }
 
-                if (spill.valueKind == IrValueKind::Double)
+                if (spill.valueKind == IrValueKind::Double || spill.valueKind == IrValueKind::Int64)
                     restoreAddr.memSize = SizeX64::qword;
                 else if (spill.valueKind == IrValueKind::Float)
                     restoreAddr.memSize = SizeX64::dword;
@@ -353,7 +353,8 @@ void IrRegAllocX64::restore(IrInst& inst, bool intoOriginalLocation)
                 else
                     CODEGEN_ASSERT(!"re-materialization not supported for this conversion command");
             }
-            else if (spill.valueKind == IrValueKind::Tag || spill.valueKind == IrValueKind::Int || spill.valueKind == IrValueKind::Pointer)
+            else if (spill.valueKind == IrValueKind::Tag || spill.valueKind == IrValueKind::Int || spill.valueKind == IrValueKind::Int64 ||
+                     spill.valueKind == IrValueKind::Pointer)
             {
                 build.mov(reg, restoreAddr);
             }
@@ -366,7 +367,7 @@ void IrRegAllocX64::restore(IrInst& inst, bool intoOriginalLocation)
                 CODEGEN_ASSERT(!"value kind not supported for restore");
             }
 
-            if (FFlag::LuauCodegenExtraSpills && spill.stackSlot != kNoStackSlot && isExtraSpillSlot(spill.stackSlot))
+            if (spill.stackSlot != kNoStackSlot && isExtraSpillSlot(spill.stackSlot))
             {
                 if (reg.size == SizeX64::xmmword)
                     build.mov(emergencyTemp, qword[sTemporarySlot + 0]);
@@ -428,10 +429,20 @@ unsigned IrRegAllocX64::findSpillStackSlot(IrValueKind valueKind)
     }
     else
     {
+        unsigned numHalves = kValueDwordSize[int(valueKind)];
+        unsigned boundary = kSpillSlots * 2;
+
         // Find a free stack slot. Four consecutive slots might be required for 16 byte TValues, so '- 3' is used
         // For 8 and 16 byte types we search in steps of 2 to return slot indices aligned by 2
         for (unsigned i = 0; i < unsigned(usedSpillSlotHalfs.size() - 3); i += 2)
         {
+            // Prevent large value from allocating at stack/extra spill storage boundary
+            if (FFlag::LuauCodegenNewRegSplit && i < boundary && i + numHalves > boundary)
+            {
+                i = boundary - 2;
+                continue;
+            }
+
             if (usedSpillSlotHalfs.test(i) || usedSpillSlotHalfs.test(i + 1))
                 continue;
 
@@ -465,8 +476,8 @@ OperandX64 IrRegAllocX64::getRestoreAddress(const IrInst& inst, ValueRestoreLoca
     case IrValueKind::None:
     case IrValueKind::Float:
     case IrValueKind::Count:
-        CODEGEN_ASSERT(!"Invalid operand restore value kind");
-        break;
+    case IrValueKind::Int64:
+        return restoreLocation.op.kind == IrOpKind::VmReg ? luauRegValueInt64(vmRegOp(op)) : luauConstantValue(vmConstOp(op));
     case IrValueKind::Tag:
         return op.kind == IrOpKind::VmReg ? luauRegTag(vmRegOp(op)) : luauConstantTag(vmConstOp(op));
     case IrValueKind::Int:
@@ -518,14 +529,14 @@ bool IrRegAllocX64::isExtraSpillSlot(unsigned slot) const
 {
     CODEGEN_ASSERT(slot != kNoStackSlot);
 
-    return slot >= kSpillSlots_NEW * 2;
+    return slot >= (FFlag::LuauCodegenNewRegSplit ? kSpillSlots : kSpillSlots_NEW) * 2;
 }
 
 int IrRegAllocX64::getExtraSpillAddressOffset(unsigned slot) const
 {
     CODEGEN_ASSERT(isExtraSpillSlot(slot));
 
-    return (slot - kSpillSlots_NEW * 2) * 4;
+    return (slot - (FFlag::LuauCodegenNewRegSplit ? kSpillSlots : kSpillSlots_NEW) * 2) * 4;
 }
 
 void IrRegAllocX64::assertFree(RegisterX64 reg) const

@@ -11,7 +11,7 @@
 #include <string.h>
 
 LUAU_FASTFLAGVARIABLE(DebugCodegenChaosA64)
-LUAU_FASTFLAG(LuauCodegenExtraSpills)
+LUAU_FASTFLAG(LuauCodegenNewRegSplit)
 
 namespace Luau
 {
@@ -23,57 +23,53 @@ namespace A64
 static const int8_t kInvalidSpill = 64;
 static_assert(kSpillSlots + kExtraSpillSlots < 64, "arm64 lowering can only handle 63 spill slots");
 
-static int allocSpill_DEPRECATED(uint32_t& free, KindA64 kind)
+static int allocSpill(uint64_t& free, KindA64 kind)
 {
-    CODEGEN_ASSERT(!FFlag::LuauCodegenExtraSpills);
     CODEGEN_ASSERT(kStackSize <= 256); // to support larger stack frames, we need to ensure qN is allocated at 16b boundary to fit in ldr/str encoding
 
-    // qN registers use two consecutive slots
-    int slot = countrz(kind == KindA64::q ? free & (free >> 1) : free);
-    if (slot == 32)
-        return -1;
+    if (FFlag::LuauCodegenNewRegSplit)
+    {
+        uint64_t search = free;
 
-    uint32_t mask = (kind == KindA64::q ? 3u : 1u) << slot;
+        // qN registers use two consecutive slots
+        if (kind == KindA64::q)
+        {
+            // Make sure bit N is set only if bit N+1 is also set
+            search = free & (free >> 1);
 
-    CODEGEN_ASSERT((free & mask) == mask);
-    free &= ~mask;
+            // Prevent qN from allocating at stack/extra spill storage boundary (by reserving last stack slot)
+            search &= ~(1ull << (kSpillSlots - 1));
+        }
 
-    return slot;
+        int slot = countrz(search);
+        if (slot == 64)
+            return -1;
+
+        uint64_t mask = (kind == KindA64::q ? 3ull : 1ull) << (unsigned long long)slot;
+
+        CODEGEN_ASSERT((free & mask) == mask);
+        free &= ~mask;
+
+        return slot;
+    }
+    else
+    {
+        // qN registers use two consecutive slots
+        int slot = countrz(kind == KindA64::q ? free & (free >> 1) : free);
+        if (slot == 64)
+            return -1;
+
+        uint64_t mask = (kind == KindA64::q ? 3ull : 1ull) << (unsigned long long)slot;
+
+        CODEGEN_ASSERT((free & mask) == mask);
+        free &= ~mask;
+
+        return slot;
+    }
 }
 
-static int allocSpill_NEW(uint64_t& free, KindA64 kind)
+static void freeSpill(uint64_t& free, KindA64 kind, uint8_t slot)
 {
-    CODEGEN_ASSERT(FFlag::LuauCodegenExtraSpills);
-    CODEGEN_ASSERT(kStackSize <= 256); // to support larger stack frames, we need to ensure qN is allocated at 16b boundary to fit in ldr/str encoding
-
-    // qN registers use two consecutive slots
-    int slot = countrz(kind == KindA64::q ? free & (free >> 1) : free);
-    if (slot == 64)
-        return -1;
-
-    uint64_t mask = (kind == KindA64::q ? 3ull : 1ull) << (unsigned long long)slot;
-
-    CODEGEN_ASSERT((free & mask) == mask);
-    free &= ~mask;
-
-    return slot;
-}
-
-static void freeSpill_DEPRECATED(uint32_t& free, KindA64 kind, uint8_t slot)
-{
-    CODEGEN_ASSERT(!FFlag::LuauCodegenExtraSpills);
-
-    // qN registers use two consecutive slots
-    uint32_t mask = (kind == KindA64::q ? 3u : 1u) << slot;
-
-    CODEGEN_ASSERT((free & mask) == 0);
-    free |= mask;
-}
-
-static void freeSpill_NEW(uint64_t& free, KindA64 kind, uint8_t slot)
-{
-    CODEGEN_ASSERT(FFlag::LuauCodegenExtraSpills);
-
     // qN registers use two consecutive slots
     uint64_t mask = (kind == KindA64::q ? 3ull : 1ull) << (unsigned long long)slot;
 
@@ -95,6 +91,8 @@ static int getReloadOffset(IrValueKind kind)
         return offsetof(TValue, tt);
     case IrValueKind::Int:
         return offsetof(TValue, value);
+    case IrValueKind::Int64:
+        return offsetof(TValue, value.l);
     case IrValueKind::Pointer:
         return offsetof(TValue, value.gc);
     case IrValueKind::Double:
@@ -147,16 +145,8 @@ IrRegAllocA64::IrRegAllocA64(
     memset(gpr.defs, -1, sizeof(gpr.defs));
     memset(simd.defs, -1, sizeof(simd.defs));
 
-    if (FFlag::LuauCodegenExtraSpills)
-    {
-        CODEGEN_ASSERT(kSpillSlots + kExtraSpillSlots < 64);
-        freeSpillSlots_NEW = (1ull << (kSpillSlots + kExtraSpillSlots)) - 1ull;
-    }
-    else
-    {
-        CODEGEN_ASSERT(kSpillSlots <= 32);
-        freeSpillSlots_DEPRECATED = (kSpillSlots == 32) ? ~0u : (1u << kSpillSlots) - 1;
-    }
+    CODEGEN_ASSERT(kSpillSlots + kExtraSpillSlots < 64);
+    freeSpillSlots = (1ull << (kSpillSlots + kExtraSpillSlots)) - 1ull;
 }
 
 RegisterA64 IrRegAllocA64::allocReg(KindA64 kind, uint32_t index)
@@ -436,7 +426,7 @@ void IrRegAllocA64::restore(const IrRegAllocA64::Spill& s, RegisterA64 reg)
 
     if (s.slot >= 0)
     {
-        if (FFlag::LuauCodegenExtraSpills && isExtraSpillSlot(s.slot))
+        if (isExtraSpillSlot(s.slot))
         {
             int extraOffset = getExtraSpillAddressOffset(s.slot);
 
@@ -461,12 +451,7 @@ void IrRegAllocA64::restore(const IrRegAllocA64::Spill& s, RegisterA64 reg)
         }
 
         if (s.slot != kInvalidSpill)
-        {
-            if (FFlag::LuauCodegenExtraSpills)
-                freeSpill_NEW(freeSpillSlots_NEW, reg.kind, s.slot);
-            else
-                freeSpill_DEPRECATED(freeSpillSlots_DEPRECATED, reg.kind, s.slot);
-        }
+            freeSpill(freeSpillSlots, reg.kind, s.slot);
     }
     else
     {
@@ -535,15 +520,14 @@ void IrRegAllocA64::spill(Set& set, uint32_t index, uint32_t targetInstIdx)
     }
     else
     {
-        int slot = FFlag::LuauCodegenExtraSpills ? allocSpill_NEW(freeSpillSlots_NEW, def.regA64.kind)
-                                                 : allocSpill_DEPRECATED(freeSpillSlots_DEPRECATED, def.regA64.kind);
+        int slot = allocSpill(freeSpillSlots, def.regA64.kind);
         if (slot < 0)
         {
             slot = kInvalidSpill;
             error = true;
         }
 
-        if (FFlag::LuauCodegenExtraSpills && isExtraSpillSlot(slot))
+        if (isExtraSpillSlot(slot))
         {
             int extraOffset = getExtraSpillAddressOffset(slot);
 

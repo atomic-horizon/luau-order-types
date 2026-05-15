@@ -1,6 +1,7 @@
 // This file is part of the Luau programming language and is licensed under MIT License; see LICENSE.txt for details
 #include "Luau/Repl.h"
 
+#include "Luau/CodeGenOptions.h"
 #include "Luau/Common.h"
 #include "lua.h"
 #include "lualib.h"
@@ -43,11 +44,11 @@
 #include <signal.h>
 
 LUAU_FASTFLAG(DebugLuauTimeTracing)
-LUAU_FASTFLAG(LuauCodegenCounterSupport)
 
 constexpr int MaxTraversalLimit = 50;
 
 static bool codegen = false;
+static bool codegenCold = false;
 static int program_argc = 0;
 char** program_argv = nullptr;
 
@@ -593,6 +594,10 @@ static bool runFile(const char* name, lua_State* GL, bool repl)
         if (codegen)
         {
             Luau::CodeGen::CompilationOptions nativeOptions;
+            if (codegenCold)
+            {
+                nativeOptions.flags = Luau::CodeGen::CodeGen_ColdFunctions;
+            }
 
             if (countersActive())
                 nativeOptions.recordCounters = true;
@@ -657,7 +662,10 @@ static void displayHelp(const char* argv0)
     printf("  --profile[=N]: profile the code using N Hz sampling (default 10000) and output results to profile.out\n");
     printf("  --timetrace: record compiler time tracing information into trace.json\n");
     printf("  --codegen: execute code using native code generation\n");
+    printf("  --codegen-cold: execute code using native code generation, including any functions deemed not profitable to natively compile\n");
+    printf("  --codegen-perf: execute code using native code generation and profile using perf (only on Linux)\n");
     printf("  --program-args,-a: declare start of arguments to be passed to the Luau program\n");
+    printf("  --fflags=<flags>: comma-separated list of fast flags to enable/disable (--fflags=true,false,LuauFlag1=true,LuauFlag2=false).\n");
 }
 
 static int assertionHandler(const char* expr, const char* file, int line, const char* function)
@@ -724,6 +732,11 @@ int replMain(int argc, char** argv)
         {
             codegen = true;
         }
+        else if (strcmp(argv[i], "--codegen-cold") == 0)
+        {
+            codegen = true;
+            codegenCold = true;
+        }
         else if (strcmp(argv[i], "--codegen-perf") == 0)
         {
             codegen = true;
@@ -736,7 +749,6 @@ int replMain(int argc, char** argv)
         else if (strcmp(argv[i], "--counters") == 0)
         {
             counters = true;
-            FFlag::LuauCodegenCounterSupport.value = true;
         }
         else if (strcmp(argv[i], "--timetrace") == 0)
         {
@@ -784,7 +796,9 @@ int replMain(int argc, char** argv)
             codegenPerfLog,
             [](void* context, uintptr_t addr, unsigned size, const char* symbol)
             {
-                fprintf(static_cast<FILE*>(context), "%016lx %08x %s\n", long(addr), size, symbol);
+                FILE* outputFile = static_cast<FILE*>(context);
+                fprintf(outputFile, "%016lx %08x %s\n", long(addr), size, symbol);
+                fflush(outputFile);
             }
         );
 #else

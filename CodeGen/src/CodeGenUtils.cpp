@@ -18,6 +18,9 @@
 
 #include <string.h>
 
+LUAU_FASTFLAGVARIABLE(LuauNativeCodeTargetCheck)
+LUAU_FASTFLAG(LuauDirectFieldGet)
+
 // All external function calls that can cause stack realloc or Lua calls have to be wrapped in VM_PROTECT
 // This makes sure that we save the pc (in case the Lua call needs to generate a backtrace) before the call,
 // and restores the stack pointer after in case stack gets reallocated
@@ -287,7 +290,7 @@ Closure* callFallback(lua_State* L, StkId ra, StkId argtop, int nresults)
         // keep executing new function
         ci->savedpc = p->code;
 
-        if (LUAU_LIKELY(p->execdata != NULL))
+        if (LUAU_LIKELY(FFlag::LuauNativeCodeTargetCheck ? p->exectarget != 0 : p->execdata != NULL))
             ci->flags = LUA_CALLINFO_NATIVE;
 
         return ccl;
@@ -377,10 +380,11 @@ const Instruction* executeGETTABLEKS(lua_State* L, const Instruction* pc, StkId 
 {
     [[maybe_unused]] Closure* cl = clvalue(L->ci->func);
     Instruction insn = *pc++;
+    int op = LUAU_INSN_OP(insn);
     StkId ra = VM_REG(LUAU_INSN_A(insn));
     StkId rb = VM_REG(LUAU_INSN_B(insn));
     uint32_t aux = *pc++;
-    TValue* kv = VM_KV(aux);
+    TValue* kv = VM_KV(op == LOP_GETUDATAKS ? LUAU_INSN_AUX_KV16(aux) : aux);
     LUAU_ASSERT(ttisstring(kv));
 
     // fast-path: built-in table
@@ -418,6 +422,36 @@ const Instruction* executeGETTABLEKS(lua_State* L, const Instruction* pc, StkId 
     }
     else
     {
+        // fast-path: registered direct field handler
+        if (FFlag::LuauDirectFieldGet && ttisuserdata(rb))
+        {
+            LuaTable* dispatch = L->global->udatadirectfields[uvalue(rb)->tag];
+            if (dispatch)
+            {
+                int slot = LUAU_INSN_C(insn) & dispatch->nodemask8;
+                LuaNode* n = &dispatch->node[slot];
+
+                if (LUAU_LIKELY(ttisstring(gkey(n)) && tsvalue(gkey(n)) == tsvalue(kv) && !ttisnil(gval(n))))
+                {
+                    lua_UserdataDirectFieldGet fn = reinterpret_cast<lua_UserdataDirectFieldGet>(pvalue(gval(n)));
+                    fn(uvalue(rb)->data, ra);
+                    return pc;
+                }
+
+                const TValue* fptr = luaH_getstr(dispatch, tsvalue(kv));
+                if (!ttisnil(fptr))
+                {
+                    // cache slot for future lookups
+                    VM_PATCH_C(pc - 2, gval2slot(dispatch, fptr));
+                    lua_UserdataDirectFieldGet fn = reinterpret_cast<lua_UserdataDirectFieldGet>(pvalue(fptr));
+                    fn(uvalue(rb)->data, ra);
+                    return pc;
+                }
+            }
+
+            // fall through to slow path
+        }
+
         // fast-path: user data with C __index TM
         const TValue* fn = 0;
         if (ttisuserdata(rb) && (fn = fasttm(L, uvalue(rb)->metatable, TM_INDEX)) && ttisfunction(fn) && clvalue(fn)->isC)
@@ -489,10 +523,11 @@ const Instruction* executeSETTABLEKS(lua_State* L, const Instruction* pc, StkId 
 {
     [[maybe_unused]] Closure* cl = clvalue(L->ci->func);
     Instruction insn = *pc++;
+    int op = LUAU_INSN_OP(insn);
     StkId ra = VM_REG(LUAU_INSN_A(insn));
     StkId rb = VM_REG(LUAU_INSN_B(insn));
     uint32_t aux = *pc++;
-    TValue* kv = VM_KV(aux);
+    TValue* kv = VM_KV(op == LOP_SETUDATAKS ? LUAU_INSN_AUX_KV16(aux) : aux);
     LUAU_ASSERT(ttisstring(kv));
 
     // fast-path: built-in table
@@ -559,10 +594,11 @@ const Instruction* executeNAMECALL(lua_State* L, const Instruction* pc, StkId ba
 {
     [[maybe_unused]] Closure* cl = clvalue(L->ci->func);
     Instruction insn = *pc++;
+    int op = LUAU_INSN_OP(insn);
     StkId ra = VM_REG(LUAU_INSN_A(insn));
     StkId rb = VM_REG(LUAU_INSN_B(insn));
     uint32_t aux = *pc++;
-    TValue* kv = VM_KV(aux);
+    TValue* kv = VM_KV(op == LOP_NAMECALLUDATA ? LUAU_INSN_AUX_KV16(aux) : aux);
     LUAU_ASSERT(ttisstring(kv));
 
     if (ttistable(rb))

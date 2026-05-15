@@ -8,6 +8,7 @@
 #include "Luau/TypeCheckLimits.h"
 #include "Luau/TypeFwd.h"
 #include "Luau/TypePairHash.h"
+#include "Luau/TypeUtils.h"
 
 #include <optional>
 #include <vector>
@@ -19,12 +20,6 @@ namespace Luau
 struct InternalErrorReporter;
 struct Scope;
 struct TypeArena;
-
-enum class OccursCheckResult
-{
-    Pass,
-    Fail
-};
 
 enum class UnifyResult
 {
@@ -124,7 +119,8 @@ private:
 
     UnifyResult unify_(TypePackId subTp, TypePackId superTp);
 
-    std::optional<TypeId> generalize(TypeId ty);
+    template<typename TID>
+    TID instantiateWithBoundTypes(TID ty);
 
     /**
      * @returns simplify(left | right)
@@ -142,7 +138,8 @@ private:
 
     // Returns true if needle occurs within haystack already.  ie if we bound
     // needle to haystack, would a cyclic TypePack result?
-    OccursCheckResult occursCheck(DenseHashSet<TypePackId>& seen, TypePackId needle, TypePackId haystack);
+    // Clip with LuauOccursCheckForAllBindings LuauBindTypePackOccursCheck
+    OccursCheckResult occursCheck_DEPRECATED(DenseHashSet<TypePackId>& seen, TypePackId needle, TypePackId haystack);
 
     TypeId freshType(NotNull<Scope> scope, Polarity polarity);
     TypePackId freshTypePack(NotNull<Scope> scope, Polarity polarity);

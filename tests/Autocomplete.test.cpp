@@ -22,6 +22,9 @@ LUAU_FASTFLAG(LuauSetMetatableDoesNotTimeTravel)
 LUAU_FASTINT(LuauTypeInferRecursionLimit)
 LUAU_FASTFLAG(LuauAutocompleteFunctionCallArgTails2)
 LUAU_FASTFLAG(LuauACOnMTTWriteOnlyPropNoCrash)
+LUAU_FASTFLAG(LuauReplacerRespectsReboundGenerics)
+LUAU_FASTFLAG(LuauOverloadGetsInstantiated2)
+LUAU_FASTFLAG(LuauAutocompleteStringSingletonIntersection)
 
 using namespace Luau;
 
@@ -136,7 +139,7 @@ struct ACFixtureImpl : BaseType
         );
         freeze(globals.globalTypes);
 
-        if (FFlag::LuauSolverV2)
+        if (!FFlag::DebugLuauForceOldSolver)
         {
             GlobalTypes& globals = this->getFrontend().globals;
             unfreeze(globals.globalTypes);
@@ -2205,7 +2208,7 @@ local fp: @1= f
 
     auto ac = autocomplete('1');
 
-    if (FFlag::LuauSolverV2)
+    if (!FFlag::DebugLuauForceOldSolver)
         REQUIRE_EQ("({ x: number, y: number }) -> number", toString(requireType("f")));
     else
     {
@@ -2259,9 +2262,8 @@ local ec = e(f@5)
 
 TEST_CASE_FIXTURE(ACFixture, "type_correct_suggestion_for_overloads")
 {
-    if (FFlag::LuauSolverV2) // CLI-116814 Autocomplete needs to populate expected types for function arguments correctly
-                             // (overloads and singletons)
-        return;
+    if (!FFlag::DebugLuauForceOldSolver) // CLI-116814 Autocomplete needs to populate expected types for function arguments correctly
+        return;                          // (overloads and singletons)
     check(R"(
 local target: ((number) -> string) & ((string) -> number))
 
@@ -2609,8 +2611,8 @@ end
 
 TEST_CASE_FIXTURE(ACFixture, "suggest_table_keys")
 {
-    if (FFlag::LuauSolverV2) // CLI-116812 AutocompleteTest.suggest_table_keys needs to populate expected types for nested
-                             // tables without an annotation
+    if (!FFlag::DebugLuauForceOldSolver) // CLI-116812 AutocompleteTest.suggest_table_keys needs to populate expected types for nested
+                                         // tables without an annotation
         return;
 
     check(R"(
@@ -3096,7 +3098,7 @@ TEST_CASE_FIXTURE(ACBuiltinsFixture, "autocomplete_on_string_singletons")
 
 TEST_CASE_FIXTURE(ACFixture, "autocomplete_string_singletons_in_literal")
 {
-    if (FFlag::LuauSolverV2)
+    if (!FFlag::DebugLuauForceOldSolver)
         return;
 
     // CLI-116814: Under the new solver, we fail to properly apply the expected
@@ -3224,7 +3226,7 @@ TEST_CASE_FIXTURE(ACFixture, "string_singleton_as_table_key")
 TEST_CASE_FIXTURE(ACFixture, "string_singleton_in_if_statement")
 {
     ScopedFastFlag sff[]{
-        {FFlag::LuauSolverV2, true},
+        {FFlag::DebugLuauForceOldSolver, false},
     };
 
     check(R"(
@@ -3308,7 +3310,7 @@ TEST_CASE_FIXTURE(ACFixture, "string_singleton_in_if_statement")
 TEST_CASE_FIXTURE(ACFixture, "string_singleton_in_if_statement2")
 {
     // don't run this when the DCR flag isn't set
-    if (!FFlag::LuauSolverV2)
+    if (FFlag::DebugLuauForceOldSolver)
         return;
 
     check(R"(
@@ -3592,7 +3594,7 @@ t.@1
 
     REQUIRE(ac.entryMap.count("m"));
 
-    if (FFlag::LuauSolverV2)
+    if (!FFlag::DebugLuauForceOldSolver)
         CHECK(ac.entryMap["m"].wrongIndexType);
     else
         CHECK(!ac.entryMap["m"].wrongIndexType);
@@ -3774,7 +3776,7 @@ TEST_CASE_FIXTURE(ACFixture, "string_contents_is_available_to_callback")
         declare function require(path: string): any
     )");
 
-    GlobalTypes& globals = FFlag::LuauSolverV2 ? getFrontend().globals : getFrontend().globalsForAutocomplete;
+    GlobalTypes& globals = !FFlag::DebugLuauForceOldSolver ? getFrontend().globals : getFrontend().globalsForAutocomplete;
 
     std::optional<Binding> require = globals.globalScope->linearSearchForBinding("require");
     REQUIRE(require);
@@ -3866,7 +3868,7 @@ TEST_CASE_FIXTURE(ACBuiltinsFixture, "require_by_string")
 
 TEST_CASE_FIXTURE(ACFixture, "autocomplete_response_perf1" * doctest::timeout(0.5))
 {
-    if (FFlag::LuauSolverV2)
+    if (!FFlag::DebugLuauForceOldSolver)
         return; // FIXME: This test is just barely at the threshhold which makes it very flaky under the new solver
 
     // Build a function type with a large overload set
@@ -3897,7 +3899,7 @@ TEST_CASE_FIXTURE(ACFixture, "autocomplete_response_perf1" * doctest::timeout(0.
 TEST_CASE_FIXTURE(ACFixture, "autocomplete_subtyping_recursion_limit")
 {
     // TODO: in old solver, type resolve can't handle the type in this test without a stack overflow
-    if (!FFlag::LuauSolverV2)
+    if (FFlag::DebugLuauForceOldSolver)
         return;
 
     ScopedFastInt luauTypeInferRecursionLimit{FInt::LuauTypeInferRecursionLimit, 10};
@@ -3982,7 +3984,7 @@ TEST_CASE_FIXTURE(ACFixture, "string_completion_outside_quotes")
         declare function require(path: string): any
     )");
 
-    GlobalTypes& globals = FFlag::LuauSolverV2 ? getFrontend().globals : getFrontend().globalsForAutocomplete;
+    GlobalTypes& globals = !FFlag::DebugLuauForceOldSolver ? getFrontend().globals : getFrontend().globalsForAutocomplete;
 
     std::optional<Binding> require = globals.globalScope->linearSearchForBinding("require");
     REQUIRE(require);
@@ -4452,7 +4454,8 @@ TEST_CASE_FIXTURE(ACFixture, "anonymous_autofilled_generic_on_argument_type_pack
         foo(@1)
     )");
 
-    const std::optional<std::string> EXPECTED_INSERT = FFlag::LuauSolverV2 ? "function(...: number): number  end" : "function(...): number  end";
+    const std::optional<std::string> EXPECTED_INSERT =
+        !FFlag::DebugLuauForceOldSolver ? "function(...: number): number  end" : "function(...): number  end";
 
     auto ac = autocomplete('1');
 
@@ -4519,7 +4522,7 @@ TEST_CASE_FIXTURE(ACExternTypeFixture, "ac_dont_overflow_on_recursive_union")
 
     auto ac = autocomplete('1');
 
-    if (FFlag::LuauSolverV2)
+    if (!FFlag::DebugLuauForceOldSolver)
     {
         CHECK(ac.entryMap.count("BaseMethod") > 0);
         CHECK(ac.entryMap.count("Method") > 0);
@@ -4533,7 +4536,7 @@ TEST_CASE_FIXTURE(ACExternTypeFixture, "ac_dont_overflow_on_recursive_union")
 
 TEST_CASE_FIXTURE(ACBuiltinsFixture, "type_function_has_types_definitions")
 {
-    ScopedFastFlag newSolver{FFlag::LuauSolverV2, true};
+    ScopedFastFlag newSolver{FFlag::DebugLuauForceOldSolver, false};
 
     check(R"(
 type function foo()
@@ -4547,7 +4550,7 @@ end
 
 TEST_CASE_FIXTURE(ACBuiltinsFixture, "type_function_private_scope")
 {
-    ScopedFastFlag newSolver{FFlag::LuauSolverV2, true};
+    ScopedFastFlag newSolver{FFlag::DebugLuauForceOldSolver, false};
 
     // Global scope polution by the embedder has no effect
     addGlobalBinding(getFrontend().globals, "thisAlsoShouldNotBeThere", Binding{getBuiltins()->anyType});
@@ -4578,7 +4581,7 @@ this@2
 
 TEST_CASE_FIXTURE(ACBuiltinsFixture, "type_function_eval_in_autocomplete")
 {
-    ScopedFastFlag newSolver{FFlag::LuauSolverV2, true};
+    ScopedFastFlag newSolver{FFlag::DebugLuauForceOldSolver, false};
 
     check(R"(
 type function foo(x)
@@ -4653,7 +4656,7 @@ TEST_CASE_FIXTURE(ACFixture, "autocomplete_in_type_assertion")
 TEST_CASE_FIXTURE(ACFixture, "autocomplete_implicit_named_index_index_expr")
 {
     // Somewhat surprisingly, the old solver didn't cover this case.
-    ScopedFastFlag sff{FFlag::LuauSolverV2, true};
+    ScopedFastFlag sff{FFlag::DebugLuauForceOldSolver, false};
 
     check(R"(
         type Constraint = "A" | "B" | "C"
@@ -4676,7 +4679,7 @@ TEST_CASE_FIXTURE(ACFixture, "autocomplete_implicit_named_index_index_expr")
 
 TEST_CASE_FIXTURE(ACFixture, "autocomplete_implicit_named_index_index_expr_without_annotation")
 {
-    ScopedFastFlag sffs{FFlag::LuauSolverV2, true};
+    ScopedFastFlag sffs{FFlag::DebugLuauForceOldSolver, false};
 
     check(R"(
         local foo = {
@@ -4705,7 +4708,7 @@ TEST_CASE_FIXTURE(ACFixture, "autocomplete_implicit_named_index_index_expr_witho
 
 TEST_CASE_FIXTURE(ACFixture, "bidirectional_autocomplete_in_function_call")
 {
-    ScopedFastFlag _{FFlag::LuauSolverV2, true};
+    ScopedFastFlag _{FFlag::DebugLuauForceOldSolver, false};
 
     check(R"(
         local function take(_: { choice: "left" | "right" }) end
@@ -4720,7 +4723,7 @@ TEST_CASE_FIXTURE(ACFixture, "bidirectional_autocomplete_in_function_call")
 
 TEST_CASE_FIXTURE(ACBuiltinsFixture, "autocomplete_via_bidirectional_self")
 {
-    ScopedFastFlag sff{FFlag::LuauSolverV2, true};
+    ScopedFastFlag sff{FFlag::DebugLuauForceOldSolver, false};
 
     check(R"(
         type IAccount = {
@@ -5041,13 +5044,128 @@ TEST_CASE_FIXTURE(ACFixture, "autocomplete_using_function_with_singleton_union_a
     CHECK_EQ(ac.entryMap.count("\"Val2\""), 1);
 }
 
+TEST_CASE_FIXTURE(ACFixture, "autocomplete_using_function_with_singleton_intersection_arg")
+{
+    ScopedFastFlag sff{FFlag::LuauAutocompleteStringSingletonIntersection, true};
+
+    check(R"(
+        local function foo(_: "Val1"&"Val1") end
+        foo(@1)
+    )");
+
+    auto ac = autocomplete('1');
+    CHECK_EQ(ac.entryMap.count("\"Val1\""), 1);
+}
+
+TEST_CASE_FIXTURE(ACFixture, "autocomplete_string_singleton_intersection_variable")
+{
+    ScopedFastFlag sff{FFlag::LuauAutocompleteStringSingletonIntersection, true};
+
+    check(R"(
+        local _: "cat"&"cat" = "@1"
+    )");
+
+    auto ac = autocomplete('1');
+    CHECK(ac.entryMap.count("cat"));
+    CHECK_EQ(ac.context, AutocompleteContext::String);
+}
+
+TEST_CASE_FIXTURE(ACFixture, "autocomplete_string_singleton_intersection_multiple")
+{
+    ScopedFastFlag sff{FFlag::LuauAutocompleteStringSingletonIntersection, true};
+
+    check(R"(
+        local function C(_: "Example"&"Example") end
+        C("@1")
+        C(@2)
+        local x: "Example"&"Example" = "@3"
+    )");
+
+    auto ac = autocomplete('1');
+    CHECK(ac.entryMap.count("Example"));
+    CHECK_EQ(ac.context, AutocompleteContext::String);
+
+    ac = autocomplete('2');
+    CHECK(ac.entryMap.count("\"Example\""));
+    CHECK_EQ(ac.context, AutocompleteContext::Expression);
+
+    ac = autocomplete('3');
+    CHECK(ac.entryMap.count("Example"));
+    CHECK_EQ(ac.context, AutocompleteContext::String);
+}
+
+TEST_CASE_FIXTURE(ACFixture, "autocomplete_string_singletons_in_intersection")
+{
+    ScopedFastFlag sffs[] = {
+        {FFlag::LuauAutocompleteStringSingletonIntersection, true},
+        {FFlag::DebugLuauForceOldSolver, false},
+    };
+
+    check(R"(
+        local _: "foo"&"baz" = "@1"
+    )");
+
+    auto ac = autocomplete('1');
+    CHECK(ac.entryMap.count("foo"));
+    CHECK(ac.entryMap.count("baz"));
+    CHECK_EQ(ac.context, AutocompleteContext::String);
+}
+
+TEST_CASE_FIXTURE(ACFixture, "autocomplete_string_singleton_disjoint_intersection_arg")
+{
+    ScopedFastFlag sffs[] = {
+        {FFlag::LuauAutocompleteStringSingletonIntersection, true},
+        {FFlag::DebugLuauForceOldSolver, false},
+    };
+
+    check(R"(
+        local function f(_: "foo"&"baz") end
+        f("@1")
+        f(@2)
+    )");
+
+    auto ac = autocomplete('1');
+    CHECK(ac.entryMap.count("foo"));
+    CHECK(ac.entryMap.count("baz"));
+    CHECK_EQ(ac.context, AutocompleteContext::String);
+
+    ac = autocomplete('2');
+    CHECK(ac.entryMap.count("\"foo\""));
+    CHECK(ac.entryMap.count("\"baz\""));
+    CHECK_EQ(ac.context, AutocompleteContext::Expression);
+}
+
+TEST_CASE_FIXTURE(ACBuiltinsFixture, "autocomplete_string_singleton_keyof_intersection")
+{
+    ScopedFastFlag sffs[] = {
+        {FFlag::LuauAutocompleteStringSingletonIntersection, true},
+        {FFlag::DebugLuauForceOldSolver, false},
+        {FFlag::LuauOverloadGetsInstantiated2, true},
+        {FFlag::LuauReplacerRespectsReboundGenerics, true},
+    };
+
+    check(R"(
+        local foo = {
+            Element1 = "Value1",
+            Element2 = "Value2",
+        }
+        local function bar<T>(key: keyof<typeof(foo)>&T) end
+        bar("@1")
+    )");
+
+    auto ac = autocomplete('1');
+    CHECK(ac.entryMap.count("Element1") > 0);
+    CHECK(ac.entryMap.count("Element2") > 0);
+    CHECK_EQ(ac.context, AutocompleteContext::String);
+}
+
 TEST_CASE_FIXTURE(ACBuiltinsFixture, "autocomplete_metatable_fill_writeonly_prop_no_crash")
 {
     // Due to how memory is allocated and cleaned up on the stack in noopt builds, this will not crash on certain platforms.
     // This can crash in optimized builds, but the test is mostly here to exercise that the branch in question gets hit
     ScopedFastFlag sffs[] = {
         {FFlag::LuauACOnMTTWriteOnlyPropNoCrash, true},
-        {FFlag::LuauSolverV2, true},
+        {FFlag::DebugLuauForceOldSolver, false},
     };
     check(R"(
 
@@ -5071,6 +5189,91 @@ x.@1
 
     auto ac = autocomplete('1');
     CHECK(ac.entryMap.empty());
+}
+
+TEST_CASE_FIXTURE(ACBuiltinsFixture, "autocomplete_table_insert")
+{
+    ScopedFastFlag sffs[] = {
+        {FFlag::DebugLuauForceOldSolver, false},
+        {FFlag::LuauOverloadGetsInstantiated2, true},
+        {FFlag::LuauReplacerRespectsReboundGenerics, true},
+    };
+
+    check(R"(
+        local function addToTable(t: {{ foobar: number }})
+            table.insert(t, { f@1 })
+        end
+    )");
+
+    auto ac = autocomplete('1');
+    CHECK(ac.entryMap.count("foobar") > 0);
+}
+
+TEST_CASE_FIXTURE(ACFixture, "autocomplete_react")
+{
+    ScopedFastFlag sffs[] = {
+        {FFlag::DebugLuauForceOldSolver, false},
+        {FFlag::LuauOverloadGetsInstantiated2, true},
+        {FFlag::LuauReplacerRespectsReboundGenerics, true},
+    };
+
+    check(R"(
+        type React_Node = any
+        type ReactElement<P, T> = any
+
+        type React_StatelessFunctionalComponent<Props> = (props: Props, context: any) -> React_Node
+        type React_Component<Props, State = nil> = {}
+        type createElementFn = <P, T>(
+            type_:
+              | React_StatelessFunctionalComponent<P>
+              | React_Component<P>
+              | string,
+            props: P?,
+            ...(React_Node | (...any) -> React_Node)
+        ) -> ReactElement<P, T>
+
+        local createElement: createElementFn = nil :: any
+
+        local function MyComponent(props: { foobar: string, barbaz: { bazquxx: string } })
+        	return nil
+        end
+
+        createElement(MyComponent, { f@1 })
+        createElement(MyComponent, { barbaz = { b@2 } })
+        createElement(MyComponent, { foobar = {}, b@3 })
+    )");
+
+    auto ac = autocomplete('1');
+    CHECK(ac.entryMap.count("foobar") > 0);
+
+    ac = autocomplete('2');
+    CHECK(ac.entryMap.count("bazquxx") > 0);
+
+    ac = autocomplete('3');
+    CHECK(ac.entryMap.count("barbaz") > 0);
+}
+
+TEST_CASE_FIXTURE(ACBuiltinsFixture, "cli_197197_autocomplete_generic_keyof")
+{
+    ScopedFastFlag sffs[] = {
+        {FFlag::DebugLuauForceOldSolver, false},
+        {FFlag::LuauOverloadGetsInstantiated2, true},
+        {FFlag::LuauReplacerRespectsReboundGenerics, true},
+    };
+
+    check(R"(
+        local function ToggleButton<T>(Table: T, Key: keyof<T>)
+            -- don't need to do anything here.
+        end
+
+        local tbl: { Changed: bool, RemoveTag: bool } = nil :: any
+
+        ToggleButton(tbl, "@1")
+    )");
+
+    auto ac = autocomplete('1');
+    CHECK(ac.entryMap.count("Changed") > 0);
+    CHECK(ac.entryMap.count("RemoveTag") > 0);
 }
 
 
