@@ -1674,6 +1674,20 @@ bool ConstraintSolver::tryDispatch(const FunctionCallConstraint& c, NotNull<cons
             ftv->magic->refine(MagicRefinementContext{constraint->scope, c.callSite, c.discriminantTypes});
         }
     }
+    else if (c.callSite)
+    {
+        // Dispatch magic functions attached to __call metamethods on callable tables.
+        // Without this, magic resolution silently breaks for any callable-table global
+        // (e.g. a `shared` table whose metatable carries the magic require resolver).
+        if (std::optional<TypeId> callTy = findMetatableEntry(builtinTypes, errors, fn, "__call", c.callSite->func->location))
+        {
+            if (auto callFn = get<FunctionType>(follow(*callTy)); callFn && callFn->magic)
+            {
+                usedMagic = callFn->magic->infer(MagicFunctionCallContext{NotNull{this}, constraint, NotNull{c.callSite}, c.argsPack, result});
+                callFn->magic->refine(MagicRefinementContext{constraint->scope, c.callSite, c.discriminantTypes});
+            }
+        }
+    }
 
     if (FFlag::LuauExplicitTypeInstantiationSupport)
     {

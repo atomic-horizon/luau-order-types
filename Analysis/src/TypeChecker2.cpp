@@ -1680,6 +1680,17 @@ void TypeChecker2::visitCall(AstExprCall* call)
                 return;
         }
     }
+    else if (std::optional<TypeId> callTy = findMetatableEntry(builtinTypes, module->errors, follow(*originalCallTy), "__call", call->func->location))
+    {
+        // Mirror the magic typeCheck dispatch above for callable tables: look up __call
+        // on the metatable and forward to its magic function if any.
+        if (auto callFn = get<FunctionType>(follow(*callTy)); callFn && callFn->magic)
+        {
+            bool usedMagic = callFn->magic->typeCheck(MagicFunctionTypeCheckContext{NotNull{this}, builtinTypes, call, argsTp, scope});
+            if (usedMagic)
+                return;
+        }
+    }
 
     OverloadResolver resolver{
         builtinTypes,

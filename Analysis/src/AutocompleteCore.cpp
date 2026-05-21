@@ -1773,6 +1773,31 @@ static std::optional<AutocompleteEntryMap> autocompleteStringParams(
         }
     }
 
+    // Callable tables: unwrap __call from the metatable so tags attached to the
+    // __call function are reachable through this autocomplete entry point.
+    std::optional<TypeId> metatable;
+    if (auto mtt = Luau::get<MetatableType>(followedId))
+        metatable = mtt->metatable;
+    else if (auto ext = Luau::get<ExternType>(followedId); ext && ext->metatable)
+        metatable = ext->metatable;
+
+    if (metatable)
+    {
+        if (auto mtTable = Luau::get<TableType>(follow(*metatable)))
+        {
+            if (auto callIt = mtTable->props.find("__call"); callIt != mtTable->props.end() && callIt->second.readTy)
+            {
+                if (auto callFn = Luau::get<FunctionType>(follow(*callIt->second.readTy)))
+                {
+                    if (std::optional<AutocompleteEntryMap> ret = performCallback(callFn))
+                    {
+                        return ret;
+                    }
+                }
+            }
+        }
+    }
+
     return std::nullopt;
 }
 
