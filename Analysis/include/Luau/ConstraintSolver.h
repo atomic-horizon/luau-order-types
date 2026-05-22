@@ -233,11 +233,13 @@ private:
 
     void generalizeOneType(TypeId ty);
 
+    // Clip with LuauRemoveConstraintSolverEmplace
     template<typename T, typename... Args>
-    void emplace(NotNull<const Constraint> constraint, TypeId ty, Args&&... args);
+    void DEPRECATED_emplace(NotNull<const Constraint> constraint, TypeId ty, Args&&... args);
 
+    // Clip with LuauRemoveConstraintSolverEmplace
     template<typename T, typename... Args>
-    void emplace(NotNull<const Constraint> constraint, TypePackId tp, Args&&... args);
+    void DEPRECATED_emplace(NotNull<const Constraint> constraint, TypePackId tp, Args&&... args);
 
 public:
     /** Attempt to dispatch a constraint.  Returns true if it was successful. If
@@ -346,16 +348,6 @@ public:
      * @param addition the constraint that other constraints should now block on.
      */
     void inheritBlocks(NotNull<const Constraint> source, NotNull<const Constraint> addition);
-
-    // Traverse the type.  If any pending types are found, block the constraint
-    // on them.
-    //
-    // Returns false if a type blocks the constraint.
-    //
-    // FIXME: This use of a boolean for the return result is an appalling
-    // interface.
-    bool blockOnPendingTypes(TypeId target, NotNull<const Constraint> constraint);
-    bool blockOnPendingTypes(TypePackId targetPack, NotNull<const Constraint> constraint);
 
     void unblock(NotNull<const Constraint> progressed);
     void unblock(TypeId ty, Location location);

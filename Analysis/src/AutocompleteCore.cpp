@@ -27,7 +27,6 @@ LUAU_FASTINT(LuauTypeInferIterationLimit)
 LUAU_FASTINT(LuauTypeInferRecursionLimit)
 LUAU_FASTFLAGVARIABLE(DebugLuauMagicVariableNames)
 LUAU_FASTFLAGVARIABLE(LuauAutocompleteFunctionCallArgTails2)
-LUAU_FASTFLAGVARIABLE(LuauACOnMTTWriteOnlyPropNoCrash)
 LUAU_FASTFLAGVARIABLE(LuauAutocompleteStringSingletonIntersection)
 LUAU_FASTFLAGVARIABLE(LuauAutocompleteConst)
 
@@ -404,49 +403,22 @@ static void autocompleteProps(
         auto indexIt = mtable->props.find("__index");
         if (indexIt != mtable->props.end())
         {
-#ifndef __EMSCRIPTEN__
-            // EMSDK cannot compile the flag-off branch, so force the flag on with defines here.
-            // Delete these conditionals when this flag is removed.
-            if (FFlag::LuauACOnMTTWriteOnlyPropNoCrash)
-#endif
-            {
-                TypeId followed = indexIt->second.readTy.value_or(nullptr);
-                if (followed == nullptr)
-                    return;
-                followed = follow(followed);
-                LUAU_ASSERT(followed);
+            TypeId followed = indexIt->second.readTy.value_or(nullptr);
+            if (followed == nullptr)
+                return;
+            followed = follow(followed);
+            LUAU_ASSERT(followed);
 
-                if (get<TableType>(followed) || get<MetatableType>(followed))
-                {
-                    autocompleteProps(module, typeArena, builtinTypes, rootTy, followed, indexType, nodes, result, seen);
-                }
-                else if (auto indexFunction = get<FunctionType>(followed))
-                {
-                    std::optional<TypeId> indexFunctionResult = first(indexFunction->retTypes);
-                    if (indexFunctionResult)
-                        autocompleteProps(module, typeArena, builtinTypes, rootTy, *indexFunctionResult, indexType, nodes, result, seen);
-                }
-            }
-#ifndef __EMSCRIPTEN__
-            else
+            if (get<TableType>(followed) || get<MetatableType>(followed))
             {
-                TypeId followed;
-                if (auto propTy = indexIt->second.readTy)
-                {
-                    followed = follow(*propTy);
-                }
-                if (get<TableType>(followed) || get<MetatableType>(followed))
-                {
-                    autocompleteProps(module, typeArena, builtinTypes, rootTy, followed, indexType, nodes, result, seen);
-                }
-                else if (auto indexFunction = get<FunctionType>(followed))
-                {
-                    std::optional<TypeId> indexFunctionResult = first(indexFunction->retTypes);
-                    if (indexFunctionResult)
-                        autocompleteProps(module, typeArena, builtinTypes, rootTy, *indexFunctionResult, indexType, nodes, result, seen);
-                }
+                autocompleteProps(module, typeArena, builtinTypes, rootTy, followed, indexType, nodes, result, seen);
             }
-#endif
+            else if (auto indexFunction = get<FunctionType>(followed))
+            {
+                std::optional<TypeId> indexFunctionResult = first(indexFunction->retTypes);
+                if (indexFunctionResult)
+                    autocompleteProps(module, typeArena, builtinTypes, rootTy, *indexFunctionResult, indexType, nodes, result, seen);
+            }
         }
     };
 
@@ -2088,11 +2060,9 @@ AutocompleteResult autocomplete_(
             return {autocompleteStatement(*module, ancestry, scopeAtPosition, position), ancestry, AutocompleteContext::Statement};
     }
 
-    else if (
-        AstStatWhile* statWhile = extractStat<AstStatWhile>(ancestry);
-        (statWhile && (!statWhile->hasDo || statWhile->doLocation.containsClosed(position)) && statWhile->condition &&
-         !statWhile->condition->location.containsClosed(position))
-    )
+    else if (AstStatWhile* statWhile = extractStat<AstStatWhile>(ancestry);
+             (statWhile && (!statWhile->hasDo || statWhile->doLocation.containsClosed(position)) && statWhile->condition &&
+              !statWhile->condition->location.containsClosed(position)))
     {
         return autocompleteWhileLoopKeywords(ancestry);
     }
@@ -2111,10 +2081,9 @@ AutocompleteResult autocomplete_(
         else if (!statIf->thenLocation || statIf->thenLocation->containsClosed(position))
             return {{{"then", AutocompleteEntry{AutocompleteEntryKind::Keyword}}}, ancestry, AutocompleteContext::Keyword};
     }
-    else if (
-        AstStatIf* statIf = extractStat<AstStatIf>(ancestry); statIf && (!statIf->thenLocation || statIf->thenLocation->containsClosed(position)) &&
-                                                              (statIf->condition && !statIf->condition->location.containsClosed(position))
-    )
+    else if (AstStatIf* statIf = extractStat<AstStatIf>(ancestry); statIf &&
+                                                                   (!statIf->thenLocation || statIf->thenLocation->containsClosed(position)) &&
+                                                                   (statIf->condition && !statIf->condition->location.containsClosed(position)))
     {
         AutocompleteEntryMap ret;
         ret["then"] = {AutocompleteEntryKind::Keyword};
@@ -2126,10 +2095,8 @@ AutocompleteResult autocomplete_(
         return autocompleteExpression(*module, builtinTypes, typeArena, ancestry, scopeAtPosition, position);
     else if (AstStatRepeat* statRepeat = extractStat<AstStatRepeat>(ancestry); statRepeat)
         return {autocompleteStatement(*module, ancestry, scopeAtPosition, position), ancestry, AutocompleteContext::Statement};
-    else if (
-        AstExprTable* exprTable = parent->as<AstExprTable>();
-        exprTable && (node->is<AstExprGlobal>() || node->is<AstExprConstantString>() || node->is<AstExprInterpString>())
-    )
+    else if (AstExprTable* exprTable = parent->as<AstExprTable>();
+             exprTable && (node->is<AstExprGlobal>() || node->is<AstExprConstantString>() || node->is<AstExprInterpString>()))
     {
         for (const auto& [kind, key, value] : exprTable->items)
         {

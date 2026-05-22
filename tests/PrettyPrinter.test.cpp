@@ -1,9 +1,7 @@
 // This file is part of the Luau programming language and is licensed under MIT License; see LICENSE.txt for details
+#include "Luau/Common.h"
 #include "Luau/Parser.h"
 #include "Luau/PrettyPrinter.h"
-#include "Luau/TypeAttach.h"
-#include "Luau/TypeInfer.h"
-#include "Luau/Type.h"
 
 #include "Fixture.h"
 #include "ScopedFlags.h"
@@ -11,6 +9,10 @@
 #include "doctest.h"
 
 LUAU_FASTFLAG(DebugLuauNoInline)
+LUAU_FASTFLAG(DebugLuauUserDefinedClasses)
+LUAU_FASTFLAG(LuauErrorTolerantPrettyPrinting)
+LUAU_FASTFLAG(LuauCstExprGroup)
+LUAU_FASTFLAG(LuauCstTypeGroup)
 
 using namespace Luau;
 
@@ -2087,6 +2089,71 @@ TEST_CASE("fuzzer_nil_optional")
     CHECK_EQ(code, prettyPrint(code, {}, true).code);
 }
 
+TEST_CASE("fuzzer_class")
+{
+    ScopedFastFlag fflag{FFlag::DebugLuauUserDefinedClasses, true};
+    const std::string code = R"( class l0 end )";
+    // should not crash
+    prettyPrint(code, {}, true);
+}
+
+TEST_CASE("simple_class_example")
+{
+    ScopedFastFlag fflag{FFlag::DebugLuauUserDefinedClasses, true};
+
+    std::string code = R"(
+class Point
+    public x: number
+    public y: number
+    function length(self)
+        return 100
+    end
+    function new()
+        return Point { x = 0, y = 0 }
+    end
+end
+    )";
+    CHECK_EQ(code, prettyPrint(code, {}, true).code);
+}
+
+TEST_CASE("remixed_simple_class")
+{
+    ScopedFastFlag fflag{FFlag::DebugLuauUserDefinedClasses, true};
+
+    std::string code = R"(
+class Point
+    function length(self)
+        return 100
+    end
+    public x
+    function new(): Point
+        return Point { x = 0, y = 0 }
+    end
+    public y
+end
+    )";
+    CHECK_EQ(code, prettyPrint(code, {}, true).code);
+}
+
+TEST_CASE("simple_class_with_public_functions")
+{
+    ScopedFastFlag fflag{FFlag::DebugLuauUserDefinedClasses, true};
+
+    std::string code = R"(
+class Point
+    public function length(self)
+        return 100
+    end
+    public x
+    public function new(): Point
+        return Point { x = 0, y = 0 }
+    end
+    public y
+end
+    )";
+    CHECK_EQ(code, prettyPrint(code, {}, true).code);
+}
+
 TEST_CASE("prettyPrint_function_attributes")
 {
     std::string code = R"(
@@ -2155,6 +2222,28 @@ TEST_CASE("transpile_explicit_type_instantiations")
 
     code = "f < < A , B , C... > >( ) t.f < < A, B, C... > >  ( )  t:f< < A, B, C > > ( )";
     CHECK_EQ(code, prettyPrint(code, {}, true).code);
+}
+
+TEST_CASE("pretty_print_incomplete_expr_group")
+{
+    ScopedFastFlag fflags[] = {{FFlag::LuauErrorTolerantPrettyPrinting, true}, {FFlag::LuauCstExprGroup, true}};
+
+    std::string code = "local x = (1 + 2";
+    CHECK_EQ(code, prettyPrint(code, {}, true, true).code);
+
+    code = "local x = (1 + 2                 )";
+    CHECK_EQ(code, prettyPrint(code, {}, true, true).code);
+}
+
+TEST_CASE("pretty_print_incomplete_type_group")
+{
+    ScopedFastFlag fflags[] = {{FFlag::LuauErrorTolerantPrettyPrinting, true}, {FFlag::LuauCstTypeGroup, true}};
+
+    std::string code = "type t = (number";
+    CHECK_EQ(code, prettyPrint(code, {}, true, true).code);
+
+    code = "type t = (number           )";
+    CHECK_EQ(code, prettyPrint(code, {}, true, true).code);
 }
 
 TEST_SUITE_END();

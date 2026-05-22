@@ -21,6 +21,10 @@ LUAU_FASTFLAG(LuauConst2)
 LUAU_FASTFLAG(DebugLuauNoInline)
 LUAU_FASTFLAG(LuauExternReadWriteAttributes)
 LUAU_FASTFLAG(LuauIntegerType)
+LUAU_FASTFLAG(DebugLuauUserDefinedClasses)
+LUAU_FASTFLAG(LuauAllowGlobalDeclarationToBeCalledClass)
+LUAU_FASTFLAG(LuauCstExprGroup)
+LUAU_FASTFLAG(LuauCstTypeGroup)
 
 // Clip with DebugLuauReportReturnTypeVariadicWithTypeSuffix
 extern bool luau_telemetry_parsed_return_type_variadic_with_type_suffix;
@@ -2048,6 +2052,43 @@ TEST_CASE_FIXTURE(Fixture, "parse_declarations")
     matchParseError("declare foo", "Expected ':' when parsing global variable declaration, got <eof>");
 }
 
+TEST_CASE_FIXTURE(Fixture, "parse_global_declaration_called_class")
+{
+    ScopedFastFlag sff{FFlag::LuauAllowGlobalDeclarationToBeCalledClass, true};
+
+    AstStatBlock* stat = parseEx(R"(
+        declare class: { x: number }
+    )")
+                             .root;
+
+    REQUIRE(stat);
+    REQUIRE_EQ(stat->body.size, 1);
+
+    AstStatDeclareGlobal* global = stat->body.data[0]->as<AstStatDeclareGlobal>();
+    REQUIRE(global);
+    CHECK(global->name == "class");
+    REQUIRE(global->type);
+    CHECK(global->type->is<AstTypeTable>());
+}
+
+TEST_CASE_FIXTURE(Fixture, "parse_class_declarations_unaffected_by_global_flag")
+{
+    ScopedFastFlag sff{FFlag::LuauAllowGlobalDeclarationToBeCalledClass, true};
+
+    AstStatBlock* stat = parseEx(R"(
+        declare class Foo
+            prop: number
+        end
+    )")
+                             .root;
+
+    REQUIRE(stat);
+    REQUIRE_EQ(stat->body.size, 1);
+    AstStatDeclareExternType* declared = stat->body.data[0]->as<AstStatDeclareExternType>();
+    REQUIRE(declared);
+    CHECK(declared->name == "Foo");
+}
+
 TEST_CASE_FIXTURE(Fixture, "parse_class_declarations")
 {
     AstStatBlock* stat = parseEx(R"(
@@ -3149,6 +3190,675 @@ TEST_CASE_FIXTURE(Fixture, "const_shadow")
     REQUIRE(stat != nullptr);
 }
 
+TEST_CASE_FIXTURE(Fixture, "class_declaration")
+{
+    ScopedFastFlag _{FFlag::DebugLuauUserDefinedClasses, true};
+
+    ParseResult res = tryParse(R"(
+        class Point2
+            public x: number
+            public y: number
+        end
+        print(Point2)
+    )");
+
+    REQUIRE(res.errors.empty());
+
+    REQUIRE(2 == res.root->body.size);
+    const AstStatClass* first = res.root->body.data[0]->as<AstStatClass>();
+    REQUIRE(first);
+    CHECK(first->name->name == "Point2");
+
+
+    REQUIRE(first->members.size == 2);
+
+    auto m1 = first->members.data[0].get_if<AstClassProperty>();
+    REQUIRE(m1);
+    CHECK(m1->name == "x");
+
+    auto m2 = first->members.data[1].get_if<AstClassProperty>();
+    REQUIRE(m2);
+    CHECK(m2->name == "y");
+
+    const AstStatExpr* second = res.root->body.data[1]->as<AstStatExpr>();
+    REQUIRE(second);
+
+    const AstExprCall* call = second->expr->as<AstExprCall>();
+    REQUIRE(call);
+
+    REQUIRE(call->args.size == 1);
+    const AstExprLocal* local = call->args.data[0]->as<AstExprLocal>();
+    REQUIRE(local);
+
+    CHECK(local->local == first->name);
+}
+
+TEST_CASE_FIXTURE(Fixture, "class_parse_errors")
+{
+    tryParse(R"( class Hello )");
+    tryParse(R"( class Hello public )");
+    tryParse(R"( class Hello public x )");
+    tryParse(R"( class Hello public x: )");
+    tryParse(R"( class Hello public x: number )");
+    tryParse(R"( class Hello end )");
+    tryParse(R"( class Hello public end )");
+    tryParse(R"( class Hello private end )");
+    tryParse(R"( class Hello public x end )");
+    tryParse(R"( class Hello public x: end )");
+    tryParse(R"( class Hello public x: number end )");
+    tryParse(R"( class Hello public x: number public x: string end )");
+    tryParse(R"( class Hello public x: number function x() end end )");
+}
+
+TEST_CASE_FIXTURE(Fixture, "class_recovery_error_in_property_type")
+{
+    ScopedFastFlag _{FFlag::DebugLuauUserDefinedClasses, true};
+
+    ParseResult result = tryParse(R"(
+class Foo
+    public x: { a: number
+    public y: number
+    function bar() end
+end
+    )");
+
+    REQUIRE(!result.errors.empty());
+
+    REQUIRE_EQ(result.root->body.size, 1);
+    const AstStatClass* cls = result.root->body.data[0]->as<AstStatClass>();
+    REQUIRE(cls);
+    REQUIRE(cls->members.size == 3);
+
+    auto m1 = cls->members.data[0].get_if<AstClassProperty>();
+    REQUIRE(m1);
+    CHECK(m1->name == "x");
+
+    auto m2 = cls->members.data[1].get_if<AstClassProperty>();
+    REQUIRE(m2);
+    CHECK(m2->name == "y");
+
+    auto m3 = cls->members.data[2].get_if<AstClassMethod>();
+    REQUIRE(m3);
+    CHECK(m3->functionName == "bar");
+}
+
+TEST_CASE_FIXTURE(Fixture, "class_public_function")
+{
+    ScopedFastFlag _{FFlag::DebugLuauUserDefinedClasses, true};
+
+    ParseResult result = tryParse(R"(
+        class Foo
+            public function bar() end
+        end
+    )");
+
+    REQUIRE(result.errors.empty());
+}
+
+TEST_CASE_FIXTURE(Fixture, "class_recovery_invalid_body_token")
+{
+    ScopedFastFlag _{FFlag::DebugLuauUserDefinedClasses, true};
+
+    ParseResult result = tryParse(R"(
+class Foo
+    public x: number
+    blah
+    function bar() end
+end
+    )");
+
+    REQUIRE(!result.errors.empty());
+
+    REQUIRE_EQ(result.root->body.size, 1);
+    const AstStatClass* cls = result.root->body.data[0]->as<AstStatClass>();
+    REQUIRE(cls);
+    REQUIRE(cls->members.size == 2);
+    auto m1 = cls->members.data[0].get_if<AstClassProperty>();
+    REQUIRE(m1);
+    CHECK(m1->name == "x");
+    auto m2 = cls->members.data[1].get_if<AstClassMethod>();
+    REQUIRE(m2);
+    CHECK(m2->functionName == "bar");
+}
+
+TEST_CASE_FIXTURE(Fixture, "class_recovery_public_no_name_and_invalid_body_token")
+{
+    ScopedFastFlag _{FFlag::DebugLuauUserDefinedClasses, true};
+
+    ParseResult result = tryParse(R"(
+class Foo
+    public propone
+    function methodone()
+    end
+
+    function methodtwo()
+        blah
+
+    public proptwo
+
+    function methodthree()
+    end
+end
+    )");
+
+    REQUIRE(!result.errors.empty());
+
+    REQUIRE_EQ(result.root->body.size, 1);
+    const AstStatClass* cls = result.root->body.data[0]->as<AstStatClass>();
+    REQUIRE(cls);
+    CHECK(cls->name->name == "Foo");
+
+    REQUIRE(cls->members.size == 3);
+
+    auto m1 = cls->members.data[0].get_if<AstClassProperty>();
+    REQUIRE(m1);
+    CHECK(m1->name == "propone");
+
+    auto m2 = cls->members.data[1].get_if<AstClassMethod>();
+    REQUIRE(m2);
+    CHECK(m2->functionName == "methodone");
+
+    auto m3 = cls->members.data[2].get_if<AstClassMethod>();
+    REQUIRE(m3);
+    CHECK(m3->functionName == "methodtwo");
+}
+
+TEST_CASE_FIXTURE(Fixture, "duplicate_class_methods")
+{
+    ScopedFastFlag _{FFlag::DebugLuauUserDefinedClasses, true};
+
+    matchParseError(
+        R"(
+class Hello
+    function hi() end
+    function hi() end
+end
+        )",
+        "Duplicate class member 'hi'"
+    );
+}
+
+TEST_CASE_FIXTURE(Fixture, "duplicate_unnamed_class_methods")
+{
+    ScopedFastFlag _{FFlag::DebugLuauUserDefinedClasses, true};
+
+    ParseResult result = tryParse(
+        R"(
+class Hello
+    function () end
+    function () end
+end
+        )"
+    );
+
+    REQUIRE_EQ(result.errors.size(), 3);
+    CHECK_EQ(result.errors[0].getMessage(), "Expected identifier when parsing method name, got '('");
+    CHECK_EQ(result.errors[1].getMessage(), "Expected identifier when parsing method name, got '('");
+    CHECK_EQ(result.errors[2].getMessage(), R"(Duplicate class member '%error-id%')");
+}
+
+TEST_CASE_FIXTURE(Fixture, "overlapping_property_and_method_names")
+{
+    ScopedFastFlag _{FFlag::DebugLuauUserDefinedClasses, true};
+
+    matchParseError(
+        R"(
+class Hello
+    public helloagain
+    function helloagain() end
+end
+        )",
+        "Duplicate class member 'helloagain'"
+    );
+}
+
+TEST_CASE_FIXTURE(Fixture, "reassigned_class")
+{
+    ScopedFastFlag _{FFlag::DebugLuauUserDefinedClasses, true};
+    ScopedFastFlag constFlag{FFlag::LuauConst2, true};
+
+    matchParseError(
+        R"(
+class Animal end
+Animal = nil
+        )",
+        "Assigned expression must be a variable or a field" // const reassignment msg
+    );
+}
+
+TEST_CASE_FIXTURE(Fixture, "class_method_missing_end_error")
+{
+    ScopedFastFlag _{FFlag::DebugLuauUserDefinedClasses, true};
+
+    matchParseError(
+        R"(
+        class Foo
+            function bar()
+                local x = 1
+    )",
+        "Expected 'end' (to close 'function' at line 3), got <eof>"
+    );
+}
+
+TEST_CASE_FIXTURE(Fixture, "classes_can_only_have_functions_and_properties")
+{
+    ScopedFastFlag _{FFlag::DebugLuauUserDefinedClasses, true};
+
+    matchParseError(
+        R"(
+        class Bicycle
+            while true do
+                cycle()
+            end
+        end
+    )",
+        "Only class properties and functions can be declared within a class"
+    );
+}
+
+TEST_CASE_FIXTURE(Fixture, "all_disallowed_metamethods")
+{
+    ScopedFastFlag _{FFlag::DebugLuauUserDefinedClasses, true};
+
+    ParseResult result = tryParse(R"(
+        class Foo
+            function __index() end
+            function __newindex() end
+            function __mode() end
+            function __metatable() end
+            function __type() end
+            function __doesnotexist() end
+        end
+    )");
+
+    REQUIRE_EQ(result.errors.size(), 6);
+    CHECK_EQ(result.errors[0].getMessage(), "Classes cannot define '__index' as a metamethod");
+    CHECK_EQ(result.errors[1].getMessage(), "Classes cannot define '__newindex' as a metamethod");
+    CHECK_EQ(result.errors[2].getMessage(), "Classes cannot define '__mode' as a metamethod");
+    CHECK_EQ(result.errors[3].getMessage(), "Classes cannot define '__metatable' as a metamethod");
+    CHECK_EQ(result.errors[4].getMessage(), "Classes cannot define '__type' as a metamethod");
+    CHECK_EQ(result.errors[5].getMessage(), "Cannot use '__doesnotexist' as a method name: names starting with '__' are reserved");
+}
+
+TEST_CASE_FIXTURE(Fixture, "disallow_double_underscore_properties")
+{
+    ScopedFastFlag _{FFlag::DebugLuauUserDefinedClasses, true};
+
+    matchParseError(
+        R"(
+        class Foo
+            public __add: any
+        end
+    )",
+        "Class properties cannot start with '__'"
+    );
+}
+
+TEST_CASE_FIXTURE(Fixture, "allowed_metamethods_still_work")
+{
+    ScopedFastFlag _{FFlag::DebugLuauUserDefinedClasses, true};
+
+    ParseResult result = tryParse(R"(
+        class Foo
+            function __tostring(self) end
+            function __add(self, other) end
+            function __eq(self, other) end
+            -- Silly, but allowed.
+            function _(self) end
+        end
+    )");
+
+    REQUIRE_EQ(result.errors.size(), 0);
+}
+
+TEST_CASE_FIXTURE(Fixture, "classes_can_interleave_methods_and_properties")
+{
+    ScopedFastFlag _{FFlag::DebugLuauUserDefinedClasses, true};
+
+    ParseResult res = tryParse(R"(
+        class Student
+            public name: string
+
+            function getname(self): string
+                return self.name:upper()
+            end
+
+            public year: number
+
+            function getyear(self): number
+                assert(self.year >= 1900 and self.year < 2100)
+                return self.year
+            end
+        end
+    )");
+
+    REQUIRE(res.errors.empty());
+
+    REQUIRE(1 == res.root->body.size);
+    const AstStatClass* cls = res.root->body.data[0]->as<AstStatClass>();
+    REQUIRE(cls);
+    CHECK(cls->name->name == "Student");
+
+    REQUIRE(cls->members.size == 4);
+
+    auto m1 = cls->members.data[0].get_if<AstClassProperty>();
+    REQUIRE(m1);
+    CHECK(m1->name == "name");
+
+    auto m2 = cls->members.data[1].get_if<AstClassMethod>();
+    REQUIRE(m2);
+    CHECK(m2->functionName == "getname");
+
+    auto m3 = cls->members.data[2].get_if<AstClassProperty>();
+    REQUIRE(m3);
+    CHECK(m3->name == "year");
+
+    auto m4 = cls->members.data[3].get_if<AstClassMethod>();
+    REQUIRE(m4);
+    CHECK(m4->functionName == "getyear");
+}
+
+TEST_CASE_FIXTURE(Fixture, "large_classes_example")
+{
+    ScopedFastFlag _{FFlag::DebugLuauUserDefinedClasses, true};
+
+    ParseResult result = tryParse(R"(
+        class PlayerStats
+            public name: string
+            public health: number
+            public level: number
+
+            -- Static 'Constructor'
+            function new(name: string)
+                return PlayerStats {
+                    name = name,
+                    health = 100,
+                    level = 1
+                }
+            end
+
+            -- Method
+            function heal(self, amount: number)
+                self.health = math.min(100, self.health + amount)
+                print(self.name .. " healed to " .. self.health)
+            end
+
+            -- Metamethod for printing
+            function __tostring(self)
+                return self.name .. " (Level " .. self.level .. ") - Health: " .. self.health
+            end
+        end
+
+        local player = PlayerStats.new("John Doe")
+        print(player.name)
+        player:heal(20)
+        print(player.name)
+    )");
+
+    REQUIRE_EQ(result.errors.size(), 0);
+}
+
+TEST_CASE_FIXTURE(Fixture, "classes_only_work_at_top_level")
+{
+    ScopedFastFlag _{FFlag::DebugLuauUserDefinedClasses, true};
+
+    matchParseError(
+        R"(
+            return function ()
+                class DynamicPlayer
+                    public level: number
+                end
+                return DynamicPlayer
+            end
+        )",
+        "Cannot declare class 'DynamicPlayer' inside another statement or expression"
+    );
+
+    matchParseError(
+        R"(
+            if math.random() > 0.5 then
+                class DynamicPlayer
+                    public level: number
+                end
+            end
+        )",
+        "Cannot declare class 'DynamicPlayer' inside another statement or expression"
+    );
+}
+
+TEST_CASE_FIXTURE(Fixture, "classes_work_after_other_statements")
+{
+    ScopedFastFlag _{FFlag::DebugLuauUserDefinedClasses, true};
+
+    ParseResult res = tryParse(R"(
+        if math.random() > 0.5 then
+            print("I am a test case!")
+        end
+
+        class Player
+            public health: number
+        end
+    )");
+
+    REQUIRE_EQ(res.errors.size(), 0);
+
+    REQUIRE(2 == res.root->body.size);
+    const AstStatClass* cls = res.root->body.data[1]->as<AstStatClass>();
+    REQUIRE(cls);
+    CHECK(cls->name->name == "Player");
+}
+
+TEST_CASE_FIXTURE(Fixture, "class_is_still_contextual")
+{
+    ScopedFastFlag _{FFlag::DebugLuauUserDefinedClasses, true};
+
+    ParseResult res = tryParse(R"(
+        local class = 42
+        print(class)
+    )");
+    REQUIRE(res.errors.empty());
+    REQUIRE(res.root->body.size == 2);
+    const AstStatLocal* locals = res.root->body.data[0]->as<AstStatLocal>();
+    REQUIRE(locals);
+    REQUIRE(locals->vars.size == 1);
+    CHECK(locals->vars.data[0]->name == "class");
+}
+
+TEST_CASE_FIXTURE(Fixture, "class_self_cannot_be_annotated")
+{
+    ScopedFastFlag _{FFlag::DebugLuauUserDefinedClasses, true};
+
+    matchParseError(
+        R"(
+        class Foobar
+            function baz(self: number, foobar)
+        end
+    )",
+        "The 'self' parameter cannot have a type annotation"
+    );
+}
+
+TEST_CASE_FIXTURE(Fixture, "classes_cannot_be_shadowed_by_classes")
+{
+    ScopedFastFlag _{FFlag::DebugLuauUserDefinedClasses, true};
+
+    matchParseError(
+        R"(
+        class Foobar
+        end
+
+        class Foobar
+        end
+    )",
+        "A class named 'Foobar' has already been declared in this module"
+    );
+}
+
+TEST_CASE_FIXTURE(Fixture, "classes_cannot_be_shadowed_by_classes_with_local_between")
+{
+    ScopedFastFlag _{FFlag::DebugLuauUserDefinedClasses, true};
+
+    matchParseError(
+        R"(
+        class Foobar
+        end
+
+        local Foobar
+
+        class Foobar
+        end
+    )",
+        "A class named 'Foobar' has already been declared in this module"
+    );
+}
+
+TEST_CASE_FIXTURE(Fixture, "classes_can_be_shadowed_by_locals")
+{
+    ScopedFastFlag _{FFlag::DebugLuauUserDefinedClasses, true};
+
+    ParseResult result = tryParse(R"(
+        class Foobar
+        end
+
+        -- This is legal: the rule is that there is exactly one class with a
+        -- given name, but we can shadow it with a local.
+        local Foobar
+    )");
+
+    CHECK(result.errors.empty());
+}
+
+TEST_CASE_FIXTURE(Fixture, "classes_can_have_members_named_public")
+{
+    ScopedFastFlag _{FFlag::DebugLuauUserDefinedClasses, true};
+
+    ParseResult result = tryParse(R"(
+        class Foobar
+            function public() end
+        end
+
+        class Barbaz
+            public public
+        end
+    )");
+
+    CHECK(result.errors.empty());
+}
+
+TEST_CASE_FIXTURE(Fixture, "classes_nested_and_repeated")
+{
+    ScopedFastFlag _{FFlag::DebugLuauUserDefinedClasses, true};
+
+    ParseResult result = tryParse(R"(
+        class Foo
+        end
+        if true then
+            class Foo
+            end
+        end
+    )");
+
+    // We only report one error per location, so even though "two" errors
+    // occur here (repeat name, nested), we'll only get one message.
+    REQUIRE(result.errors.size() == 1);
+    CHECK_EQ("Cannot declare class 'Foo' inside another statement or expression", result.errors[0].getMessage());
+}
+
+TEST_CASE_FIXTURE(Fixture, "non_exported_class")
+{
+    ScopedFastFlag _{FFlag::DebugLuauUserDefinedClasses, true};
+
+    ParseResult result = tryParse(R"(
+        class Foo
+        end
+    )");
+
+    CHECK(result.errors.size() == 0);
+
+    AstStatBlock* block = result.root;
+    REQUIRE(block->body.size == 1);
+
+    AstStatClass* classDecl = block->body.data[0]->as<AstStatClass>();
+    REQUIRE(classDecl != nullptr);
+    CHECK(!classDecl->exported);
+}
+
+TEST_CASE_FIXTURE(Fixture, "export_class")
+{
+    ScopedFastFlag _{FFlag::DebugLuauUserDefinedClasses, true};
+
+    ParseResult result = tryParse(R"(
+        export class Foo
+        end
+    )");
+
+    CHECK(result.errors.size() == 0);
+
+    AstStatBlock* block = result.root;
+    REQUIRE(block->body.size == 1);
+
+    AstStatClass* classDecl = block->body.data[0]->as<AstStatClass>();
+    REQUIRE(classDecl != nullptr);
+    CHECK(classDecl->exported);
+}
+
+TEST_CASE_FIXTURE(Fixture, "expr_group_with_cst")
+{
+    ScopedFastFlag _{FFlag::LuauCstExprGroup, true};
+
+    ParseOptions parseOptions;
+    parseOptions.storeCstData = true;
+
+    ParseResult result = parseEx(
+        R"(
+        local a = (1 + 2)
+    )",
+        parseOptions
+    );
+    REQUIRE(result.root);
+
+    REQUIRE_EQ(result.root->body.size, 1);
+    auto local = result.root->body.data[0]->as<AstStatLocal>();
+    REQUIRE(local);
+    REQUIRE_EQ(local->values.size, 1);
+    auto group = local->values.data[0]->as<AstExprGroup>();
+    REQUIRE(group);
+
+    const auto baseCstNode = result.cstNodeMap.find(group);
+    REQUIRE(baseCstNode);
+    const auto cstNode = (*baseCstNode)->as<CstExprGroup>();
+    REQUIRE(cstNode);
+    CHECK_EQ(cstNode->closePosition, Position{1, 24});
+}
+
+TEST_CASE_FIXTURE(Fixture, "type_group_with_cst")
+{
+    ScopedFastFlag _{FFlag::LuauCstTypeGroup, true};
+
+    ParseOptions parseOptions;
+    parseOptions.storeCstData = true;
+
+    ParseResult result = parseEx(
+        R"(
+        type t = (number)
+    )",
+        parseOptions
+    );
+    REQUIRE(result.root);
+
+    REQUIRE_EQ(result.root->body.size, 1);
+    auto typeAlias = result.root->body.data[0]->as<AstStatTypeAlias>();
+    REQUIRE(typeAlias);
+    auto group = typeAlias->type->as<AstTypeGroup>();
+    REQUIRE(group);
+
+    const auto baseCstNode = result.cstNodeMap.find(group);
+    REQUIRE(baseCstNode);
+    const auto cstNode = (*baseCstNode)->as<CstTypeGroup>();
+    REQUIRE(cstNode);
+    CHECK_EQ(cstNode->closePosition, Position{1, 24});
+}
+
 TEST_SUITE_END();
 
 TEST_SUITE_BEGIN("ParseErrorRecovery");
@@ -3350,8 +4060,6 @@ TEST_CASE_FIXTURE(Fixture, "recovery_of_parenthesized_expressions")
             checkAstEquivalence(codeWithErrors, code);
         }
     };
-
-    DOES_NOT_PASS_NEW_SOLVER_GUARD();
 
     checkRecovery("function foo(a, b. c) return a + b end", "function foo(a, b) return a + b end", 1);
     checkRecovery(
@@ -4874,4 +5582,5 @@ TEST_CASE_FIXTURE(Fixture, "extern_read_write_attributes")
     CHECK_EQ(declaredExternType->props.data[3].access, AstTableAccess::ReadWrite);
 }
 
+// TODO unit tests for various parse errors.
 TEST_SUITE_END();
