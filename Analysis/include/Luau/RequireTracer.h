@@ -21,10 +21,12 @@ struct RequireTraceResult
     std::vector<std::pair<ModuleName, Location>> requireList;
 
 #ifdef ORDER_STRING_REQUIRE
-    // Order-style shared() requires: these are added to requireSet for build ordering
-    // but NOT to requireLocations, so they are excluded from cycle error detection.
-    // This allows intentional cyclic dependencies between Order services without
-    // triggering ModuleHasCyclicDependency errors.
+    // Order-style shared() requires. These participate fully in the dependency graph
+    // (build ordering AND cycle detection - cycle visibility is what makes cyclic
+    // requires resolve to `any` instead of embedding freeable cross-module TypeIds).
+    // They are tracked separately so that ModuleHasCyclicDependency diagnostics can be
+    // suppressed for cycles that pass through a shared() edge, which are intentional
+    // in the Order framework.
     std::vector<std::pair<ModuleName, Location>> sharedRequireList;
 #endif
 };

@@ -1141,9 +1141,9 @@ ControlFlow TypeChecker::check(const ScopePtr& scope, const AstStatLocal& local)
                         scope->importedModules[name] = moduleInfo->name;
 
                         // Imported typeArguments of requires that transitively refer to current module have to be replaced with 'any'
-                        for (const auto& [location, path] : requireCycles)
+                        for (const RequireCycle& cyc : requireCycles)
                         {
-                            if (!path.empty() && path.front() == moduleInfo->name)
+                            if (!cyc.path.empty() && cyc.path.front() == moduleInfo->name)
                             {
                                 for (auto& [name, tf] : scope->importedTypeBindings[name])
                                     tf = TypeFun{{}, {}, anyType};
@@ -5104,9 +5104,9 @@ TypeId TypeChecker::checkRequire(const ScopePtr& scope, const ModuleInfo& module
     }
 
     // Types of requires that transitively refer to current module have to be replaced with 'any'
-    for (const auto& [location, path] : requireCycles)
+    for (const RequireCycle& cyc : requireCycles)
     {
-        if (!path.empty() && path.front() == moduleInfo.name)
+        if (!cyc.path.empty() && cyc.path.front() == moduleInfo.name)
             return anyType;
     }
 

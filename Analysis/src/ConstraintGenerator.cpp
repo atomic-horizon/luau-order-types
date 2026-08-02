@@ -1523,9 +1523,9 @@ ControlFlow ConstraintGenerator::visit(const ScopePtr& scope, AstStatLocal* stat
             scope->importedModules[name] = moduleInfo->name;
 
             // Imported typeArguments of requires that transitively refer to current module have to be replaced with 'any'
-            for (const auto& [location, path] : requireCycles)
+            for (const RequireCycle& cyc : requireCycles)
             {
-                if (path.empty() || path.front() != moduleInfo->name)
+                if (cyc.path.empty() || cyc.path.front() != moduleInfo->name)
                     continue;
 
                 for (auto& [name, tf] : scope->importedTypeBindings[name])

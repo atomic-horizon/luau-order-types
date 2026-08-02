@@ -423,12 +423,33 @@ std::vector<RequireCycle> getRequireCycles(
 
         if (!cycle.empty())
         {
+#ifdef ORDER_STRING_REQUIRE
+            // Walk the cycle's edges (start -> cycle[0] -> ... -> cycle[n-1] == start) and
+            // flag the cycle if any edge is an Order shared() require, so that
+            // ModuleHasCyclicDependency reporting can skip it. This runs at build-queue
+            // construction time, where reading sourceNodes is safe.
+            bool viaSharedRequire = false;
+            const SourceNode* from = start;
+            for (const ModuleName& toName : cycle)
+            {
+                if (from && from->sharedRequireSet.contains(toName))
+                {
+                    viaSharedRequire = true;
+                    break;
+                }
+                auto toIt = sourceNodes.find(toName);
+                from = toIt != sourceNodes.end() ? toIt->second.get() : nullptr;
+            }
+#endif
             result.emplace_back(
                 RequireCycle{depLocation, std::move(cycle)}
             ); // note: if we didn't find a cycle, all nodes that we've seen don't depend [transitively] on start
             // so it's safe to *only* clear seen vector when we find a cycle
             // if we don't do it, we will not have correct reporting for some cycles
             seen.clear();
+#ifdef ORDER_STRING_REQUIRE
+            result.back().viaSharedRequire = viaSharedRequire;
+#endif
         }
     }
 
@@ -1825,6 +1846,14 @@ void Frontend::checkBuildQueueItem(BuildQueueItem& item)
     {
         for (const RequireCycle& cyc : requireCycles)
         {
+#ifdef ORDER_STRING_REQUIRE
+            // Cycles that pass through an Order shared() edge are intentional (services may
+            // reference each other). They remain in requireCycles so that cyclic requires
+            // still resolve to `any` (see checkRequire/resolveModule), but they are not
+            // surfaced as ModuleHasCyclicDependency diagnostics.
+            if (cyc.viaSharedRequire)
+                continue;
+#endif
             TypeError te{cyc.location, moduleInfo.name, ModuleHasCyclicDependency{cyc.path}};
 
             module->errors.push_back(te);
@@ -2588,6 +2617,9 @@ std::pair<SourceNode*, SourceModule*> Frontend::getSourceNode(const ModuleName& 
 
     sourceNode->requireSet.clear();
     sourceNode->requireLocations.clear();
+#ifdef ORDER_STRING_REQUIRE
+    sourceNode->sharedRequireSet.clear();
+#endif
     sourceNode->dirtySourceModule = false;
 
     if (it == sourceNodes.end())
@@ -2602,12 +2634,24 @@ std::pair<SourceNode*, SourceModule*> Frontend::getSourceNode(const ModuleName& 
     sourceNode->requireLocations = require.requireList;
 
 #ifdef ORDER_STRING_REQUIRE
-    // Order shared() requires: add to requireSet for build ordering so these modules
-    // are type-checked before the module that depends on them. They are intentionally
-    // excluded from requireLocations so that getRequireCycles() does not report
-    // ModuleHasCyclicDependency errors for intentional cyclic Order service dependencies.
-    for (const auto& [moduleName, _] : require.sharedRequireList)
+    // Order shared() requires participate fully in the dependency graph: requireSet for
+    // build ordering / dependents propagation, and requireLocations so that
+    // getRequireCycles() sees cycles that pass through shared() edges. Cycle visibility
+    // is a MEMORY SAFETY requirement, not just a diagnostic: checkRequire (old solver)
+    // and ConstraintSolver::resolveModule (new solver) consult requireCycles to return
+    // `any` for cyclic edges. If a cycle is hidden, the module checked first in the cycle
+    // embeds raw TypeIds from its (stale, dirty) counterpart's arena; when the counterpart
+    // is then rechecked, the old arena is freed and the fresh module's type graph dangles,
+    // causing access violations in follow()/Substitution::substitute on later queries.
+    // Intentional Order service cycles are instead kept diagnostic-free by suppressing
+    // ModuleHasCyclicDependency for cycles containing a shared() edge (see
+    // Frontend::requireCycleContainsSharedEdge), which sharedRequireSet records.
+    for (const auto& [moduleName, location] : require.sharedRequireList)
+    {
         sourceNode->requireSet.insert(moduleName);
+        sourceNode->sharedRequireSet.insert(moduleName);
+        sourceNode->requireLocations.emplace_back(moduleName, location);
+    }
 #endif
 
     return {sourceNode.get(), sourceModule.get()};

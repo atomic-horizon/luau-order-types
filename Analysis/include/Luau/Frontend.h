@@ -84,6 +84,16 @@ struct SourceNode
     std::vector<std::pair<ModuleName, Location>> requireLocations;
     Set<ModuleName> dependents{{}};
 
+#ifdef ORDER_STRING_REQUIRE
+    // Targets required from this module via Order-style shared() calls. Used to
+    // recognise require cycles that pass through a shared() edge so that the
+    // ModuleHasCyclicDependency diagnostic can be suppressed for them (the cycles
+    // themselves MUST still be visible to getRequireCycles(): the cycle list is what
+    // makes checkRequire()/resolveModule() return `any` for cyclic edges instead of
+    // embedding raw TypeIds into a module arena that a recheck can free).
+    DenseHashSet<ModuleName> sharedRequireSet{{}};
+#endif
+
     bool dirtySourceModule = true;
     bool dirtyModule = true;
     bool dirtyModuleForAutocomplete = true;

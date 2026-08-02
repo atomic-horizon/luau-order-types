@@ -4066,9 +4066,9 @@ TypeId ConstraintSolver::DEPRECATED_resolveModule(const ModuleInfo& info, const 
         return builtinTypes->errorType;
     }
 
-    for (const auto& [location, path] : requireCycles)
+    for (const RequireCycle& cyc : requireCycles)
     {
-        if (!path.empty() && path.front() == info.name)
+        if (!cyc.path.empty() && cyc.path.front() == info.name)
             return builtinTypes->anyType;
     }
 
@@ -4109,9 +4109,9 @@ TypeId ConstraintSolver::resolveModule(const ModuleInfo& info, const Location& l
         return builtinTypes->errorType;
     }
 
-    for (const auto& [location, path] : requireCycles)
+    for (const RequireCycle& cyc : requireCycles)
     {
-        if (!path.empty() && path.front() == info.name)
+        if (!cyc.path.empty() && cyc.path.front() == info.name)
             return builtinTypes->anyType;
     }
 

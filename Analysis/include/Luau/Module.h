@@ -71,6 +71,14 @@ struct RequireCycle
 {
     Location location;
     std::vector<ModuleName> path; // one of the paths for a require() to go all the way back to the originating module
+#ifdef ORDER_STRING_REQUIRE
+    // True if any edge of the reported cycle path is an Order shared() require. Such cycles
+    // are intentional at runtime (shared() defers module lookup), so ModuleHasCyclicDependency
+    // is not reported for them - but they still participate in the `any` substitution for
+    // cyclic requires, which is what keeps cyclic modules from embedding raw TypeIds into
+    // each other's (recheckable, freeable) arenas.
+    bool viaSharedRequire = false;
+#endif
 };
 
 struct Module
