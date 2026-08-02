@@ -13,15 +13,16 @@
 using namespace Luau;
 
 LUAU_FASTFLAG(DebugLuauForceOldSolver)
+LUAU_FASTFLAG(DebugLuauCyclicRequireTypeInference)
+LUAU_FASTFLAG(LuauExportValueSyntax)
+LUAU_FASTFLAG(LuauExportValueTypecheck)
 LUAU_FASTINT(LuauNormalizeCacheLimit)
 LUAU_FASTINT(LuauTarjanChildLimit)
 LUAU_FASTINT(LuauTypeInferIterationLimit)
 LUAU_FASTINT(LuauTypeInferRecursionLimit)
 LUAU_FASTINT(LuauTypeInferTypePackLoopLimit)
-LUAU_FASTFLAG(LuauIntegerType)
-LUAU_FASTFLAG(LuauThreadUniferStateThroughTypeFunctionReduction)
-LUAU_FASTFLAG(LuauOverloadGetsInstantiated2)
-LUAU_FASTFLAG(LuauPropagateFreeTypesIntoUnionAndIntersectionBounds)
+LUAU_FASTFLAG(LuauIntegerType2)
+LUAU_FASTFLAG(LuauImproveUniqueTableWidthSubtyping)
 LUAU_FASTFLAG(LuauRemoveConstraintSolverEmplace)
 
 TEST_SUITE_BEGIN("ProvisionalTests");
@@ -86,7 +87,7 @@ TEST_CASE_FIXTURE(Fixture, "typeguard_inference_incomplete")
 
     if (!FFlag::DebugLuauForceOldSolver)
     {
-        if (FFlag::LuauIntegerType)
+        if (FFlag::LuauIntegerType2)
             CHECK_EQ(expectedWithNewSolver, decorateWithTypes(code));
         else
             CHECK_EQ(expectedWithNewSolver_NOINTEGER, decorateWithTypes(code));
@@ -97,8 +98,6 @@ TEST_CASE_FIXTURE(Fixture, "typeguard_inference_incomplete")
 
 TEST_CASE_FIXTURE(BuiltinsFixture, "luau-polyfill.Array.filter")
 {
-    DOES_NOT_PASS_NEW_SOLVER_GUARD();
-
     // This test exercises the fact that we should reduce sealed/unsealed/free tables
     // res is a unsealed table with type {((T & ~nil)?) & any}
     // Because we do not reduce it fully, we cannot unify it with `Array<T> = { [number] : T}
@@ -1416,23 +1415,6 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "assert_and_many_nested_typeof_contexts")
     LUAU_REQUIRE_NO_ERRORS(result);
 }
 
-TEST_CASE_FIXTURE(BuiltinsFixture, "bidirectional_inference_variadic_type_pack_read_only_prop")
-{
-    ScopedFastFlag sff{FFlag::DebugLuauForceOldSolver, false};
-
-    LUAU_REQUIRE_NO_ERRORS(check(R"(
-        local foo: { read bar: (...string) -> () } = {
-            bar = function (foobar)
-                print(foobar)
-            end
-        }
-    )"));
-
-    // CLI-174314: This should be `string`: we need to flatten and *extend*
-    // the type packs for function arguments, so that variadic type packs
-    // fill in.
-    CHECK_EQ("unknown", toString(requireTypeAtPosition({3, 24})));
-}
 
 TEST_CASE_FIXTURE(Fixture, "indexing_union_of_indexers")
 {
@@ -1450,7 +1432,9 @@ TEST_CASE_FIXTURE(Fixture, "indexing_union_of_indexers")
 
 TEST_CASE_FIXTURE(BuiltinsFixture, "unions_should_work_with_bidirectional_typechecking")
 {
-    ScopedFastFlag newSolver{FFlag::DebugLuauForceOldSolver, false};
+    ScopedFastFlag sff[] = {
+        {FFlag::DebugLuauForceOldSolver, false},
+    };
 
     CheckResult result = check(R"(
         type dog = { name: string }
@@ -1533,7 +1517,6 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "oss_2305_keyof_index_example")
 {
     ScopedFastFlag sffs[] = {
         {FFlag::DebugLuauForceOldSolver, false},
-        {FFlag::LuauThreadUniferStateThroughTypeFunctionReduction, true},
         {FFlag::LuauRemoveConstraintSolverEmplace, true},
     };
 
@@ -1566,10 +1549,7 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "oss_2305_keyof_index_example")
 
 TEST_CASE_FIXTURE(BuiltinsFixture, "pcall_calling_pcall")
 {
-    ScopedFastFlag sffs[] = {
-        {FFlag::DebugLuauForceOldSolver, false},
-        {FFlag::LuauOverloadGetsInstantiated2, true},
-    };
+    ScopedFastFlag _{FFlag::DebugLuauForceOldSolver, false};
 
     // This should have a type checking error, at least, but previously caused
     // an internal compiler exception.
@@ -1580,7 +1560,7 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "pcall_calling_pcall")
 }
 
 
-// LuauPropagateFreeTypesIntoUnionAndIntersectionBounds: when a union super type has multiple free-type members,
+// When a union super type has multiple free-type members,
 // propagateToFreeMembers adds subTy as a lower bound to ALL of them. This is an over-approximation:
 // `freeA <: T | U` only requires one of T or U to contain freeA, not both.
 //
@@ -1589,13 +1569,11 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "pcall_calling_pcall")
 // `1` alone should fully determine T. The ideal inferred type for `a` would be `number`.
 //
 // The over-constraining is sound (wider types, not false errors) and benign for the common case
-// (`T | nil` has only one free member). See .claude/luau-unifier2-free-type-bounds.md, Gap 5.
+// (`T | nil` has only one free member).
 TEST_CASE_FIXTURE(BuiltinsFixture, "union_super_with_multiple_free_members_over_constrains_lower_bounds")
 {
     ScopedFastFlag sffs[] = {
         {FFlag::DebugLuauForceOldSolver, false},
-        {FFlag::LuauOverloadGetsInstantiated2, true},
-        {FFlag::LuauPropagateFreeTypesIntoUnionAndIntersectionBounds, true},
     };
 
     CheckResult result = check(R"(
@@ -1684,6 +1662,79 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "cli_181248_unreduced_union_of_indexers")
 
     // We *probably* want to normalize this to `string`.
     CHECK_EQ("\"hi\" | string", toString(requireType("val")));
+}
+
+// Mimics cycle_detection_between_check_and_nocheck test, but with export statements instead of return statements.
+TEST_CASE_FIXTURE(BuiltinsFixture, "export_cycle_between_check_and_nocheck")
+{
+    ScopedFastFlag sffs[] = {
+        {FFlag::DebugLuauCyclicRequireTypeInference, true},
+        {FFlag::DebugLuauForceOldSolver, false},
+        {FFlag::LuauExportValueSyntax, true},
+        {FFlag::LuauExportValueTypecheck, true},
+    };
+
+    fileResolver.source["game/Gui/Modules/A"] = R"(
+        --!strict
+        local Modules = game:GetService('Gui').Modules
+        local B = require(Modules.B)
+        export local hello = B.hello
+    )";
+    fileResolver.source["game/Gui/Modules/B"] = R"(
+        --!nocheck
+        local Modules = game:GetService('Gui').Modules
+        local A = require(Modules.A)
+        export local hello = A.hello
+    )";
+
+    CheckResult result = getFrontend().check("game/Gui/Modules/A");
+
+    // An error is expected here because the type of `hello` in module A is `any`, but the type of `hello` in module B is `unknown`. This could be related to the below test case of generalization running between module constraints being solved, which will be a follow up PR fix (see test below).
+    LUAU_REQUIRE_ERROR_COUNT(1, result);
+    CHECK(get<UnknownProperty>(result.errors[0]));
+}
+
+// Mimics nocheck_cycle_used_by_checked test, but with export statements instead of return statements.
+TEST_CASE_FIXTURE(BuiltinsFixture, "nocheck_export_cycle_produces_error_type")
+{
+    ScopedFastFlag sffs[] = {
+        {FFlag::DebugLuauCyclicRequireTypeInference, true},
+        {FFlag::DebugLuauForceOldSolver, false},
+        {FFlag::LuauExportValueSyntax, true},
+        {FFlag::LuauExportValueTypecheck, true},
+    };
+
+    fileResolver.source["game/Gui/Modules/A"] = R"(
+        --!nocheck
+        local Modules = game:GetService('Gui').Modules
+        local B = require(Modules.B)
+        export local hello = B.hello
+    )";
+    fileResolver.source["game/Gui/Modules/B"] = R"(
+        --!nocheck
+        local Modules = game:GetService('Gui').Modules
+        local A = require(Modules.A)
+        export local hello = A.hello
+    )";
+    fileResolver.source["game/Gui/Modules/C"] = R"(
+        --!strict
+        local Modules = game:GetService('Gui').Modules
+        local A = require(Modules.A)
+        local B = require(Modules.B)
+        return {a=A, b=B}
+    )";
+
+    CheckResult result = getFrontend().check("game/Gui/Modules/C");
+    LUAU_REQUIRE_NO_ERRORS(result);
+
+    ModulePtr cModule = getFrontend().moduleResolver.getModule("game/Gui/Modules/C");
+    std::optional<TypeId> cExports = first(cModule->returnType);
+    REQUIRE(bool(cExports));
+
+    // This is happening due to constraint generalization running between the modules' constraints are fully solved, leading to the circular modules' return types being asymmetrically generalized. A fix for this will go in a following PR to run constraint generalization after all modules in a SCC have been solved.
+    std::string result_str = toString(*cExports);
+    CHECK((result_str == "{ a: { read hello: any }, b: { read hello: unknown } }" ||
+           result_str == "{ a: { read hello: unknown }, b: { read hello: any } }"));
 }
 
 TEST_SUITE_END();

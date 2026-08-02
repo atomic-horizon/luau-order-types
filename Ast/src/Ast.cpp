@@ -423,11 +423,11 @@ std::string toString(AstExprUnary::Op op)
 {
     switch (op)
     {
-    case AstExprUnary::Minus:
+    case AstExprUnary::Op::Minus:
         return "-";
-    case AstExprUnary::Not:
+    case AstExprUnary::Op::Not:
         return "not";
-    case AstExprUnary::Len:
+    case AstExprUnary::Op::Len:
         return "#";
     default:
         LUAU_ASSERT(false);
@@ -864,11 +864,12 @@ void AstStatFunction::visit(AstVisitor* visitor)
     }
 }
 
-AstStatLocalFunction::AstStatLocalFunction(const Location& location, AstLocal* name, AstExprFunction* func, bool isConst)
+AstStatLocalFunction::AstStatLocalFunction(const Location& location, AstLocal* name, AstExprFunction* func, bool isConst, Position constKeywordBegin)
     : AstStat(ClassIndex(), location)
     , name(name)
     , func(func)
     , isConst(isConst)
+    , constKeywordBegin(constKeywordBegin)
 {
 }
 
@@ -978,9 +979,10 @@ AstStatDeclareFunction::AstStatDeclareFunction(
 {
 }
 
-AstStatClass::AstStatClass(const Location& location, AstLocal* name, AstArray<AstClassMember> members, bool exported)
+AstStatClass::AstStatClass(const Location& location, AstLocal* name, AstExpr* super, AstArray<AstClassMember> members, bool exported)
     : AstStat(ClassIndex(), location)
     , name(name)
+    , super(super)
     , members(members)
     , exported(exported)
 {
@@ -992,6 +994,9 @@ void AstStatClass::visit(AstVisitor* visitor)
     LUAU_ASSERT(FFlag::DebugLuauUserDefinedClasses);
     if (visitor->visit(this))
     {
+        if (super)
+            super->visit(visitor);
+
         for (const auto& member : members)
         {
             Luau::visit(
@@ -1125,12 +1130,14 @@ AstTypeReference::AstTypeReference(
     std::optional<Location> prefixLocation,
     const Location& nameLocation,
     bool hasParameterList,
-    const AstArray<AstTypeOrPack>& parameters
+    const AstArray<AstTypeOrPack>& parameters,
+    AstLocal* prefixLocal
 )
     : AstType(ClassIndex(), location)
     , hasParameterList(hasParameterList)
     , prefix(prefix)
     , prefixLocation(prefixLocation)
+    , prefixLocal(prefixLocal)
     , name(name)
     , nameLocation(nameLocation)
     , parameters(parameters)

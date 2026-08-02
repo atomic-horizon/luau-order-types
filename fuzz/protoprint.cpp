@@ -978,7 +978,13 @@ struct ProtoToLuau
 
     void print(const luau::StatLocal& stat)
     {
-        source += "local ";
+        if (stat.is_exported())
+            source += "export ";
+
+        if (stat.is_const())
+            source += "const ";
+        else
+            source += "local ";
 
         if (stat.vars_size() == 0)
             source += '_';
@@ -1129,7 +1135,13 @@ struct ProtoToLuau
 
     void print(const luau::StatLocalFunction& stat)
     {
-        source += "local function ";
+        if (stat.is_exported())
+            source += "export function ";
+        else if (stat.is_const())
+            source += "const function ";
+        else
+            source += "local function ";
+
         print(stat.var());
         function(stat.func());
         source += '\n';
@@ -1210,8 +1222,21 @@ struct ProtoToLuau
 
     void print(const luau::StatClass& stat)
     {
+        if (stat.is_exported())
+            source += "export ";
+
         source += "class ";
         print(stat.name());
+
+        if (stat.has_extends())
+        {
+            source += " extends ";
+            if (classes.size() == 0)
+                source += "_";
+            else
+                print(*classes[size_t(stat.extends()) % classes.size()].name);
+        }
+
         source += '\n';
 
         std::vector<const luau::Name*> propNames;

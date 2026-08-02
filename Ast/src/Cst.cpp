@@ -3,19 +3,36 @@
 #include "Luau/Cst.h"
 #include "Luau/Common.h"
 
-LUAU_FASTFLAG(LuauCstExprGroup)
-LUAU_FASTFLAG(LuauCstTypeGroup)
-
 namespace Luau
 {
 
 int gCstRttiIndex = 0;
 
+CstAttr::CstAttr(bool hasAt)
+    : CstNode(CstClassIndex())
+    , hasAt(hasAt)
+{
+}
+
+CstParametrizedAttr::CstParametrizedAttr(Position openParenPosition, Position closeParenPosition, AstArray<Position> argsCommaPositions)
+    : CstNode(CstClassIndex())
+    , openParenPosition(openParenPosition)
+    , closeParenPosition(closeParenPosition)
+    , argsCommaPositions(argsCommaPositions)
+{
+}
+
+CstAttrList::CstAttrList(Position atBracketPosition, Position closeBracketPosition, AstArray<Position> commaPositions)
+    : atBracketPosition(atBracketPosition)
+    , closeBracketPosition(closeBracketPosition)
+    , commaPositions(commaPositions)
+{
+}
+
 CstExprGroup::CstExprGroup(Position closePosition)
     : CstNode(CstClassIndex())
     , closePosition(closePosition)
 {
-    LUAU_ASSERT(FFlag::LuauCstExprGroup);
 }
 
 CstExprConstantNumber::CstExprConstantNumber(const AstArray<char>& value)
@@ -39,7 +56,7 @@ CstExprConstantInteger::CstExprConstantInteger(const AstArray<char>& value)
 {
 }
 
-CstExprCall::CstExprCall(std::optional<Position> openParens, std::optional<Position> closeParens, AstArray<Position> commaPositions)
+CstExprCall::CstExprCall(Position openParens, Position closeParens, AstArray<Position> commaPositions)
     : CstNode(CstClassIndex())
     , openParens(openParens)
     , closeParens(closeParens)
@@ -129,12 +146,7 @@ CstStatLocal::CstStatLocal(
 {
 }
 
-CstStatFor::CstStatFor(
-    Position annotationColonPosition,
-    Position equalsPosition,
-    Position endCommaPosition,
-    std::optional<Position> stepCommaPosition
-)
+CstStatFor::CstStatFor(Position annotationColonPosition, Position equalsPosition, Position endCommaPosition, Position stepCommaPosition)
     : CstNode(CstClassIndex())
     , annotationColonPosition(annotationColonPosition)
     , equalsPosition(equalsPosition)
@@ -171,24 +183,41 @@ CstStatCompoundAssign::CstStatCompoundAssign(Position opPosition)
 
 CstStatFunction::CstStatFunction(Position functionKeywordPosition)
     : CstNode(CstClassIndex())
+    , attrLists({})
+    , functionKeywordPosition(functionKeywordPosition)
+{
+}
+
+CstStatFunction::CstStatFunction(AstArray<CstAttrList*> attrLists, Position functionKeywordPosition)
+    : CstNode(CstClassIndex())
+    , attrLists(attrLists)
     , functionKeywordPosition(functionKeywordPosition)
 {
 }
 
 CstStatLocalFunction::CstStatLocalFunction(Position localKeywordPosition, Position functionKeywordPosition)
     : CstNode(CstClassIndex())
+    , attrLists({})
     , localKeywordPosition(localKeywordPosition)
     , functionKeywordPosition(functionKeywordPosition)
 {
 }
 
-CstGenericType::CstGenericType(std::optional<Position> defaultEqualsPosition)
+CstStatLocalFunction::CstStatLocalFunction(AstArray<CstAttrList*> attrLists, Position localKeywordPosition, Position functionKeywordPosition)
+    : CstNode(CstClassIndex())
+    , attrLists(attrLists)
+    , localKeywordPosition(localKeywordPosition)
+    , functionKeywordPosition(functionKeywordPosition)
+{
+}
+
+CstGenericType::CstGenericType(Position defaultEqualsPosition)
     : CstNode(CstClassIndex())
     , defaultEqualsPosition(defaultEqualsPosition)
 {
 }
 
-CstGenericTypePack::CstGenericTypePack(Position ellipsisPosition, std::optional<Position> defaultEqualsPosition)
+CstGenericTypePack::CstGenericTypePack(Position ellipsisPosition, Position defaultEqualsPosition)
     : CstNode(CstClassIndex())
     , ellipsisPosition(ellipsisPosition)
     , defaultEqualsPosition(defaultEqualsPosition)
@@ -219,7 +248,7 @@ CstStatTypeFunction::CstStatTypeFunction(Position typeKeywordPosition, Position 
 }
 
 CstTypeReference::CstTypeReference(
-    std::optional<Position> prefixPointPosition,
+    Position prefixPointPosition,
     Position openParametersPosition,
     AstArray<Position> parametersCommaPositions,
     Position closeParametersPosition
@@ -244,7 +273,7 @@ CstTypeFunction::CstTypeFunction(
     AstArray<Position> genericsCommaPositions,
     Position closeGenericsPosition,
     Position openArgsPosition,
-    AstArray<std::optional<Position>> argumentNameColonPositions,
+    AstArray<Position> argumentNameColonPositions,
     AstArray<Position> argumentsCommaPositions,
     Position closeArgsPosition,
     Position returnArrowPosition
@@ -268,14 +297,14 @@ CstTypeTypeof::CstTypeTypeof(Position openPosition, Position closePosition)
 {
 }
 
-CstTypeUnion::CstTypeUnion(std::optional<Position> leadingPosition, AstArray<Position> separatorPositions)
+CstTypeUnion::CstTypeUnion(Position leadingPosition, AstArray<Position> separatorPositions)
     : CstNode(CstClassIndex())
     , leadingPosition(leadingPosition)
     , separatorPositions(separatorPositions)
 {
 }
 
-CstTypeIntersection::CstTypeIntersection(std::optional<Position> leadingPosition, AstArray<Position> separatorPositions)
+CstTypeIntersection::CstTypeIntersection(Position leadingPosition, AstArray<Position> separatorPositions)
     : CstNode(CstClassIndex())
     , leadingPosition(leadingPosition)
     , separatorPositions(separatorPositions)
@@ -288,28 +317,25 @@ CstTypeSingletonString::CstTypeSingletonString(AstArray<char> sourceString, CstE
     , quoteStyle(quoteStyle)
     , blockDepth(blockDepth)
 {
-    LUAU_ASSERT(quoteStyle != CstExprConstantString::QuotedInterp);
+    LUAU_ASSERT(quoteStyle != CstExprConstantString::QuoteStyle::QuotedInterp);
 }
 
 CstTypeGroup::CstTypeGroup(Position closePosition)
     : CstNode(CstClassIndex())
     , closePosition(closePosition)
 {
-    LUAU_ASSERT(FFlag::LuauCstTypeGroup);
 }
 
 CstTypePackExplicit::CstTypePackExplicit()
     : CstNode(CstClassIndex())
-    , hasParentheses(false)
-    , openParenthesesPosition(Position{0, 0})
-    , closeParenthesesPosition(Position{0, 0})
+    , openParenthesesPosition(Position::missing())
+    , closeParenthesesPosition(Position::missing())
     , commaPositions({})
 {
 }
 
 CstTypePackExplicit::CstTypePackExplicit(Position openParenthesesPosition, Position closeParenthesesPosition, AstArray<Position> commaPositions)
     : CstNode(CstClassIndex())
-    , hasParentheses(true)
     , openParenthesesPosition(openParenthesesPosition)
     , closeParenthesesPosition(closeParenthesesPosition)
     , commaPositions(commaPositions)

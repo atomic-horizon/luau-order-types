@@ -262,6 +262,7 @@ std::optional<Ty> follow(std::optional<Ty> ty)
  */
 bool isLiteral(const AstExpr* expr);
 
+// Clip with LuauRelaxConstraintOrderingForFunctionCheck
 /**
  * Given a function call and a mapping from expression to type, determine
  * whether the type of any argument in said call in depends on a blocked types.
@@ -272,7 +273,7 @@ bool isLiteral(const AstExpr* expr);
  * @param astTypes Mapping from AST node to TypeID
  * @returns A vector of blocked types
  */
-std::vector<TypeId> findBlockedArgTypesIn(AstExprCall* expr, NotNull<DenseHashMap<const AstExpr*, TypeId>> astTypes);
+std::vector<TypeId> findBlockedArgTypesIn_DEPRECATED(AstExprCall* expr, NotNull<DenseHashMap<const AstExpr*, TypeId>> astTypes);
 
 /**
  * Given a scope and a free type, find the closest parent that has a present
@@ -293,14 +294,14 @@ bool fastIsSubtype(TypeId subTy, TypeId superTy);
  * @param exprType Type of the expression to match
  * @return An element of `tables` that best matches `exprType`.
  */
-std::optional<TypeId> extractMatchingTableType_DEPRECATED(std::vector<TypeId>& tables, TypeId exprType, NotNull<BuiltinTypes> builtinTypes);
+std::optional<TypeId> extractMatchingTableType_DEPRECATED(const UnionType* expectedUnion, TypeId exprType, NotNull<BuiltinTypes> builtinTypes);
 
-/**
- * @param tables A list of potential table parts of a union
- * @param exprType Type of the expression to match
- * @return An element of `tables` that best matches `exprType`.
- */
-std::optional<TypeId> extractMatchingTableType(const UnionType* utv, TypeId exprType, NotNull<BuiltinTypes> builtinTypes);
+std::optional<TypeId> extractMatchingTableType(
+    const UnionType* expectedUnion,
+    TypeId exprType,
+    NotNull<BuiltinTypes> builtinTypes,
+    NotNull<TypeArena> arena
+);
 
 /**
  * @param item A member of a table in an AST
@@ -400,11 +401,12 @@ private:
 TypeId addIntersection(NotNull<TypeArena> arena, NotNull<BuiltinTypes> builtinTypes, std::initializer_list<TypeId> list);
 TypeId addUnion(NotNull<TypeArena> arena, NotNull<BuiltinTypes> builtinTypes, std::initializer_list<TypeId> list);
 
-struct ContainsAnyGeneric final : public TypeOnceVisitor
+// Clip with LuauInstantiateFunctionTypeBeforePush
+struct ContainsAnyGeneric_DEPRECATED final : public TypeOnceVisitor
 {
     bool found = false;
 
-    explicit ContainsAnyGeneric();
+    explicit ContainsAnyGeneric_DEPRECATED();
 
     bool visit(TypeId ty) override;
     bool visit(TypePackId ty) override;

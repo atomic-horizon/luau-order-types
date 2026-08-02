@@ -8,25 +8,38 @@
 #include "lgc.h"
 #include "ldo.h"
 #include "lbytecode.h"
+#include "lvm.h"
 
 #include <string.h>
 #include <stdio.h>
 
-static const char* getfuncname(Closure* f);
+LUAU_FASTFLAG(LuauCIProto)
+LUAU_FASTFLAG(LuauManagedDebugNames)
+
+static const char* getfuncname(Closure* cl);
 
 static int currentpc(lua_State* L, CallInfo* ci)
 {
-    return pcRel(ci->savedpc, ci_func(ci)->l.p);
+    if (FFlag::LuauCIProto)
+        return pcRel(ci->savedpc, ci->p);
+    else
+        return pcRel(ci->savedpc, ci_func(ci)->l.p);
 }
 
 static int currentline(lua_State* L, CallInfo* ci)
 {
-    return luaG_getline(ci_func(ci)->l.p, currentpc(L, ci));
+    if (FFlag::LuauCIProto)
+        return luaG_getline(ci->p, currentpc(L, ci));
+    else
+        return luaG_getline(ci_func(ci)->l.p, currentpc(L, ci));
 }
 
 static Proto* getluaproto(CallInfo* ci)
 {
-    return (isLua(ci) ? cast_to(Proto*, ci_func(ci)->l.p) : NULL);
+    if (FFlag::LuauCIProto)
+        return cast_to(Proto*, ci->p);
+    else
+        return (isLua(ci) ? cast_to(Proto*, ci_func(ci)->l.p) : NULL);
 }
 
 int lua_getargument(lua_State* L, int level, int n)
@@ -121,10 +134,10 @@ static Closure* auxgetinfo(lua_State* L, const char* what, lua_Debug* ar, Closur
             }
             else
             {
-                TString* source = f->l.p->source;
+                TString* source = (FFlag::LuauCIProto && ci != nullptr ? ci->p : f->l.p)->source;
                 ar->source = getstr(source);
                 ar->what = "Lua";
-                ar->linedefined = f->l.p->linedefined;
+                ar->linedefined = (FFlag::LuauCIProto && ci != nullptr ? ci->p : f->l.p)->linedefined;
                 ar->short_src = luaO_chunkid(ar->ssbuf, sizeof(ar->ssbuf), getstr(source), source->len);
             }
             break;
@@ -156,8 +169,8 @@ static Closure* auxgetinfo(lua_State* L, const char* what, lua_Debug* ar, Closur
             }
             else
             {
-                ar->isvararg = f->l.p->is_vararg;
-                ar->nparams = f->l.p->numparams;
+                ar->isvararg = (FFlag::LuauCIProto && ci != nullptr ? ci->p : f->l.p)->is_vararg;
+                ar->nparams = (FFlag::LuauCIProto && ci != nullptr ? ci->p : f->l.p)->numparams;
             }
             break;
         }
@@ -175,6 +188,14 @@ static Closure* auxgetinfo(lua_State* L, const char* what, lua_Debug* ar, Closur
         }
     }
     return cl;
+}
+
+void lua_callhook(lua_State* L, lua_Hook hook, void* userdata)
+{
+    api_check(L, hook != nullptr);
+    api_check(L, L->ci != L->base_ci);
+
+    return luau_callhook(L, hook, userdata);
 }
 
 int lua_stackdepth(lua_State* L)
@@ -223,9 +244,17 @@ static const char* getfuncname(Closure* cl)
 {
     if (cl->isC)
     {
-        if (cl->c.debugname)
+        if (FFlag::LuauManagedDebugNames)
         {
-            return cl->c.debugname;
+            if (TString* str = cl->c.debugname)
+                return getstr(str);
+        }
+        else
+        {
+            if (cl->c.debugname_DEPRECATED)
+            {
+                return cl->c.debugname_DEPRECATED;
+            }
         }
     }
     else
@@ -521,6 +550,11 @@ int lua_breakpoint(lua_State* L, int funcindex, int line, int enabled)
         luaG_breakpoint(L, p, target, bool(enabled));
 
     return target;
+}
+
+int lua_atbreakpoint(lua_State* L)
+{
+    return luaG_onbreak(L) ? 1 : 0;
 }
 
 static void getcoverage(Proto* p, int depth, int* buffer, size_t size, void* context, lua_Coverage callback)

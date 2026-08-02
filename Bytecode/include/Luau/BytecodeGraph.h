@@ -3,9 +3,9 @@
 
 #include "Luau/Bytecode.h"
 #include "Luau/BytecodeBuilder.h"
-#include "Luau/DenseHash.h"
 #include "Luau/SmallVector.h"
 
+#include <algorithm>
 #include <list>
 #include <optional>
 #include <vector>
@@ -113,6 +113,23 @@ struct BcImm
         int32_t valueInt;
         uint32_t valueImport;
     };
+
+    bool operator==(const BcImm& rhs) const
+    {
+        if (kind == BcImmKind::Boolean && rhs.kind == BcImmKind::Boolean)
+            return valueBoolean == rhs.valueBoolean;
+        else if (kind == BcImmKind::Int && rhs.kind == BcImmKind::Int)
+            return valueInt == rhs.valueInt;
+        else if (kind == BcImmKind::Import && rhs.kind == BcImmKind::Import)
+            return valueImport == rhs.valueImport;
+        else
+            return false;
+    }
+
+    bool operator!=(const BcImm& rhs) const
+    {
+        return !(*this == rhs);
+    }
 };
 
 enum class BcVmConstKind : uint8_t
@@ -120,12 +137,14 @@ enum class BcVmConstKind : uint8_t
     Nil,
     Boolean,
     Number,
-    Vector,
+    Vectorf,
+    Vectord,
     String,
     Import,
     Table,
     Closure,
-    Integer
+    Integer,
+    ClassShape
 };
 
 struct BcVmConst
@@ -136,18 +155,74 @@ struct BcVmConst
     {
         bool valueBoolean;
         double valueNumber;
-        float valueVector[4];
+        float valueVectorf[4];
+        double valueVectord[4];
         std::string_view valueString;
         uint32_t valueImport;
         uint32_t valueTable;
         uint32_t valueClosure;
         int64_t valueInteger;
+        uint32_t valueClassShape;
     };
 
     BcVmConst()
         : kind(BcVmConstKind::Nil)
         , valueBoolean(0)
     {
+    }
+
+    bool operator==(const BcVmConst& rhs) const
+    {
+        if (kind != rhs.kind)
+            return false;
+
+        switch (kind)
+        {
+        case BcVmConstKind::Nil:
+            return true;
+
+        case BcVmConstKind::Boolean:
+            return valueBoolean == rhs.valueBoolean;
+
+        case BcVmConstKind::Number:
+            return valueNumber == rhs.valueNumber;
+
+        case BcVmConstKind::Vectorf:
+            return valueVectorf[0] == rhs.valueVectorf[0] && valueVectorf[1] == rhs.valueVectorf[1] && valueVectorf[2] == rhs.valueVectorf[2] &&
+                   valueVectorf[3] == rhs.valueVectorf[3];
+
+        case BcVmConstKind::Vectord:
+            return valueVectord[0] == rhs.valueVectord[0] && valueVectord[1] == rhs.valueVectord[1] && valueVectord[2] == rhs.valueVectord[2] &&
+                   valueVectord[3] == rhs.valueVectord[3];
+
+        case BcVmConstKind::String:
+            return valueString == rhs.valueString;
+
+        case BcVmConstKind::Import:
+            return valueImport == rhs.valueImport;
+
+        case BcVmConstKind::Table:
+            return valueTable == rhs.valueTable;
+
+        case BcVmConstKind::Closure:
+            return valueClosure == rhs.valueClosure;
+
+        case BcVmConstKind::Integer:
+            return valueInteger == rhs.valueInteger;
+
+        case BcVmConstKind::ClassShape:
+            return valueClassShape == rhs.valueClassShape;
+
+        default:
+            LUAU_ASSERT(!"Unhandled BcVmConstKind");
+            return false;
+        }
+        return false;
+    }
+
+    bool operator!=(const BcVmConst& rhs) const
+    {
+        return !(*this == rhs);
     }
 };
 
@@ -156,9 +231,11 @@ using BcOps = SmallVector<BcOp, 4>;
 struct BcInst
 {
     LuauOpcode op;
+    BcOp block;
 
     // Operands
     BcOps ops;
+    std::vector<BcOp> uses;
 
     uint32_t lastUse = 0;
     uint32_t useCount = 0;
@@ -243,11 +320,17 @@ struct BcBlockEdge
 
 using BcEdges = SmallVector<BcBlockEdge, 2>;
 
+enum BcBlockFlag
+{
+    Dead = 1 << 0
+};
+
 struct BcBlock
 {
     uint8_t flags = 0;
     uint32_t useCount = 0;
 
+    std::list<BcOp> phis;
     std::list<BcOp> ops;
     BcEdges successors;
     BcEdges predecessors;
@@ -268,6 +351,7 @@ struct BcBlock
 struct BcPhi
 {
     BcOps ops;
+    std::vector<BcOp> uses;
 };
 
 struct BcProj
@@ -292,7 +376,26 @@ struct DebugLocal
     uint32_t endpc;
 };
 
-template <typename VmConst>
+template<typename T>
+struct BcRef
+{
+    std::vector<T>& vec;
+    BcOp op;
+
+    T* operator->()
+    {
+        LUAU_ASSERT(op.index < vec.size());
+        return &vec[op.index];
+    }
+
+    T& operator*()
+    {
+        LUAU_ASSERT(op.index < vec.size());
+        return vec[op.index];
+    }
+};
+
+template<typename VmConst>
 struct BcFunction
 {
     uint8_t maxstacksize;
@@ -308,6 +411,7 @@ struct BcFunction
     std::vector<BcPhi> phis;
     std::vector<BcProj> projections;
     std::vector<BytecodeBuilder::TableShape> tableShapes;
+    std::vector<BytecodeBuilder::ClassShape> classShapes;
 
     BcOp entryBlock;
     BcOp exitBlock;
@@ -405,13 +509,132 @@ struct BcFunction
         LUAU_ASSERT(&inst >= instructions.data() && &inst <= instructions.data() + instructions.size());
         return uint32_t(&inst - instructions.data());
     }
+
+    BcOp addImm(BcImmKind kind)
+    {
+        BcImm imm{kind};
+        imm.valueInt = 0;
+        immediates.emplace_back(imm);
+        return BcOp{BcOpKind::Imm, static_cast<uint32_t>(immediates.size() - 1)};
+    }
+
+    BcOp addImm(const BcImm& imm)
+    {
+        immediates.emplace_back(imm);
+        return BcOp{BcOpKind::Imm, static_cast<uint32_t>(immediates.size() - 1)};
+    }
+
+    BcOp addConst(const VmConst& value)
+    {
+        constants.emplace_back(value);
+        return BcOp{BcOpKind::VmConst, static_cast<uint32_t>(constants.size() - 1)};
+    }
+
+    BcRef<BcBlock> block(BcOp op)
+    {
+        LUAU_ASSERT(op.kind == BcOpKind::Block);
+        return {blocks, op};
+    }
+
+    BcRef<BcInst> inst(BcOp op)
+    {
+        LUAU_ASSERT(op.kind == BcOpKind::Inst);
+        return {instructions, op};
+    }
+
+    template<typename T>
+    T as(BcOp op)
+    {
+        BcRef<BcInst> insn = inst(op);
+        LUAU_ASSERT(insn->op == T::opcode);
+
+        return T{*this, insn};
+    }
+
+    BcRef<BcImm> imm(BcOp op)
+    {
+        LUAU_ASSERT(op.kind == BcOpKind::Imm);
+        return {immediates, op};
+    }
+
+    BcRef<BcPhi> phi(BcOp op)
+    {
+        LUAU_ASSERT(op.kind == BcOpKind::Phi);
+        return {phis, op};
+    }
+
+    BcRef<BcProj> proj(BcOp op)
+    {
+        LUAU_ASSERT(op.kind == BcOpKind::Proj);
+        return {projections, op};
+    }
+
+    BcRef<VmConst> vmConst(BcOp op)
+    {
+        LUAU_ASSERT(op.kind == BcOpKind::VmConst);
+        return {constants, op};
+    }
+
+    void recordUse(BcOp usedOp, BcOp user)
+    {
+        if (usedOp.kind == BcOpKind::Inst)
+            this->instOp(usedOp).uses.push_back(user);
+        else if (usedOp.kind == BcOpKind::Phi)
+            this->phiOp(usedOp).uses.push_back(user);
+    }
+
+    void addUse(BcRef<BcInst> instUser, BcOp usedOp)
+    {
+        instUser->ops.push_back(usedOp);
+        recordUse(usedOp, instUser.op);
+    }
+
+    void addUse(BcRef<BcPhi> phiUser, BcOp usedOp)
+    {
+        phiUser->ops.push_back(usedOp);
+        recordUse(usedOp, phiUser.op);
+    }
+
+    void eraseUse(BcOp userOp, BcOp usedOp)
+    {
+        if (usedOp.kind == BcOpKind::Inst)
+        {
+            BcRef<BcInst> usedInst = inst(usedOp);
+            usedInst->uses.erase(std::remove(usedInst->uses.begin(), usedInst->uses.end(), userOp), usedInst->uses.end());
+        }
+        else if (usedOp.kind == BcOpKind::Phi)
+        {
+            BcRef<BcPhi> usedPhi = phi(usedOp);
+            usedPhi->uses.erase(std::remove(usedPhi->uses.begin(), usedPhi->uses.end(), userOp), usedPhi->uses.end());
+        }
+    }
+
+    void eraseOp(BcOp op)
+    {
+        BcRef<BcInst> instRef = inst(op);
+        BcRef<BcBlock> blockRef = block(instRef->block);
+        blockRef->ops.erase(std::remove(blockRef->ops.begin(), blockRef->ops.end(), op), blockRef->ops.end());
+    }
+
+    // replace the instruction's operands while keeping def->use links consistent
+    void setOps(BcOp op, BcRef<BcInst> inst, std::initializer_list<BcOp> newOps)
+    {
+        for (BcOp oldOp : inst->ops)
+            eraseUse(op, oldOp);
+        inst->ops.clear();
+        for (BcOp newOp : newOps)
+        {
+            inst->ops.push_back(newOp);
+            recordUse(newOp, op);
+        }
+    };
 };
 
 using CompTimeBcFunction = BcFunction<BcVmConst>;
 
 std::optional<CompTimeBcFunction> fromFunctionBytecode(std::string bytecode, std::vector<std::string_view>& strings);
-std::string toFunctionBytecode(CompTimeBcFunction& func);
-std::string toFunctionBytecode(BytecodeBuilder& builder, CompTimeBcFunction& func);
+std::string toFunctionBytecode(CompTimeBcFunction& fn);
+std::string toFunctionBytecode(BytecodeBuilder& bcb, CompTimeBcFunction& fn);
 
 } // namespace Bytecode
 } // namespace Luau
